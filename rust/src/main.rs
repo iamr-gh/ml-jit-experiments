@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 #[derive(Debug)]
 pub enum Op {
     Add(Box<Op>, Box<Op>),
@@ -12,11 +14,22 @@ pub enum Op {
     Constant(f32),
 }
 
-// simple recursive descent on expression
-// should add parens to force binding
+fn eval_exp(exp: &Box<Op>, binding: &HashMap<&str, f32>) -> f32 {
+    return match exp.as_ref() {
+        Op::Add(l, r) => eval_exp(l, &binding) + eval_exp(r, &binding),
+        Op::Sub(l, r) => eval_exp(l, &binding) - eval_exp(r, &binding),
+        Op::Mul(l, r) => eval_exp(l, &binding) * eval_exp(r, &binding),
+        Op::Div(l, r) => eval_exp(l, &binding) / eval_exp(r, &binding),
+        Op::Exp(l, r) => eval_exp(l, &binding).powf(eval_exp(r, &binding)),
+        Op::Variable(s) => *binding.get(s.as_str()).unwrap(),
+        Op::Constant(v) => *v,
+    };
+}
+
+// simple recursive descent without error checking
+// should eventually add parens and function style ops(extension of name)
 fn parse_exp(s: &String, start: usize) -> (Box<Op>, usize) {
     println!("Calling parse on {}:{}", s, start);
-    // no error handling currently
     let mut end = start;
 
     let mut c = s.as_bytes()[end];
@@ -72,7 +85,13 @@ fn parse_exp(s: &String, start: usize) -> (Box<Op>, usize) {
 }
 
 fn main() {
-    let (ast, _) = parse_exp(&String::from("1^x+3555*long"), 0);
+    let (ast, _) = parse_exp(&String::from("3555*long+2^x"), 0);
     println!("ast: {:?}", ast);
-    println!("Hello, world!");
+
+    let val = eval_exp(
+        &ast,
+        &HashMap::<&str, f32>::from([("x", 3f32), ("long", 2f32)]),
+    );
+
+    println!("result: {:?}", val);
 }
