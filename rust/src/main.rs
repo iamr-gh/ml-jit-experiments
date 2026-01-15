@@ -14,13 +14,68 @@ pub enum Op {
     Constant(f32),
 }
 
-fn eval_exp(exp: &Box<Op>, binding: &HashMap<&str, f32>) -> f32 {
+// annotation used in forwards backwards path
+#[derive(Debug)]
+pub struct ValGrad {
+    val: f32,
+    grad: f32,
+}
+
+// calculate output val and gradient with respect to a given input
+fn eval_grad(exp: &Box<Op>, binding: &HashMap<&str, f32>, respect: &str) -> ValGrad {
     return match exp.as_ref() {
-        Op::Add(l, r) => eval_exp(l, &binding) + eval_exp(r, &binding),
-        Op::Sub(l, r) => eval_exp(l, &binding) - eval_exp(r, &binding),
-        Op::Mul(l, r) => eval_exp(l, &binding) * eval_exp(r, &binding),
-        Op::Div(l, r) => eval_exp(l, &binding) / eval_exp(r, &binding),
-        Op::Exp(l, r) => eval_exp(l, &binding).powf(eval_exp(r, &binding)),
+        Op::Add(l, r) => {
+            let lvg = eval_grad(l, &binding, respect);
+            let rvg = eval_grad(r, &binding, respect);
+            ValGrad {
+                val: lvg.val + rvg.val,
+                grad: lvg.grad + rvg.grad,
+            }
+        }
+        Op::Sub(l, r) => {
+            let lvg = eval_grad(l, &binding, respect);
+            let rvg = eval_grad(r, &binding, respect);
+            ValGrad {
+                val: lvg.val - rvg.val,
+                grad: lvg.grad - rvg.grad,
+            }
+        }
+        Op::Mul(l, r) => {
+            let lvg = eval_grad(l, &binding, respect);
+            let rvg = eval_grad(r, &binding, respect);
+            ValGrad {
+                val: lvg.val * rvg.val,
+                grad: lvg.grad * rvg.val + rvg.grad * lvg.val,
+            }
+        }
+        Op::Div(l, r) => {
+            let lvg = eval_grad(l, &binding, respect);
+            let rvg = eval_grad(r, &binding, respect);
+            ValGrad {
+                val: lvg.val + rvg.val,
+                grad: ((lvg.grad * rvg.val) - (rvg.grad * lvg.val)) / (lvg.val * lvg.val),
+            }
+        }
+        Op::Variable(s) => ValGrad {
+            val: *binding.get(s.as_str()).unwrap(),
+            grad: if s == respect { 1f32 } else { 0f32 },
+        },
+        Op::Constant(v) => ValGrad {
+            val: *v,
+            grad: 0f32,
+        },
+        // exp is messy with ln, cutting for now
+        _ => unimplemented!(),
+    };
+}
+
+fn eval(exp: &Box<Op>, binding: &HashMap<&str, f32>) -> f32 {
+    return match exp.as_ref() {
+        Op::Add(l, r) => eval(l, &binding) + eval(r, &binding),
+        Op::Sub(l, r) => eval(l, &binding) - eval(r, &binding),
+        Op::Mul(l, r) => eval(l, &binding) * eval(r, &binding),
+        Op::Div(l, r) => eval(l, &binding) / eval(r, &binding),
+        Op::Exp(l, r) => eval(l, &binding).powf(eval(r, &binding)),
         Op::Variable(s) => *binding.get(s.as_str()).unwrap(),
         Op::Constant(v) => *v,
     };
@@ -28,8 +83,9 @@ fn eval_exp(exp: &Box<Op>, binding: &HashMap<&str, f32>) -> f32 {
 
 // simple recursive descent without error checking
 // should eventually add parens and function style ops(extension of name)
+// parsing does not bind properly
+// also needs to ignore spaces
 fn parse_exp(s: &String, start: usize) -> (Box<Op>, usize) {
-    println!("Calling parse on {}:{}", s, start);
     let mut end = start;
 
     let mut c = s.as_bytes()[end];
@@ -85,13 +141,18 @@ fn parse_exp(s: &String, start: usize) -> (Box<Op>, usize) {
 }
 
 fn main() {
-    let (ast, _) = parse_exp(&String::from("3555*long+2^x"), 0);
-    println!("ast: {:?}", ast);
+    let (simple, _) = parse_exp(&String::from("3555*long+2^x"), 0);
+    let val_simple = eval(&simple, &HashMap::from([("x", 3f32), ("long", 2f32)]));
+    assert!(val_simple == 35550f32);
 
-    let val = eval_exp(
-        &ast,
-        &HashMap::<&str, f32>::from([("x", 3f32), ("long", 2f32)]),
-    );
+    let (f, _) = parse_exp(&String::from("x+y*y"), 0);
+    let bound = HashMap::from([("x", 2f32), ("y", 6f32)]);
+    let dfdx = eval_grad(&f, &bound, "x");
+    let dfdy = eval_grad(&f, &bound, "y");
 
-    println!("result: {:?}", val);
+    assert!(dfdx.val == 38f32);
+    assert!(dfdx.grad == 1f32);
+
+    assert!(dfdy.val == 38f32);
+    assert!(dfdy.grad == 12f32);
 }
