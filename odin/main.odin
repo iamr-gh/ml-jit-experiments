@@ -6,51 +6,83 @@ import "core:os"
 import "core:strconv"
 import "core:unicode"
 
-NodeType :: enum {
-	Constant = 0,
-	Variable,
+OpType :: enum {
 	Add,
 	Sub,
 	Mul,
 	Div,
 }
 
-NodeChildren :: struct {
-	l: ^Node,
-	r: ^Node,
+Op :: struct {
+	type: OpType,
+	l:    ^Node,
+	r:    ^Node,
 }
 
-// could be made smaller with top level union
-Node :: struct {
-	type: NodeType,
-	data: union {
-		NodeChildren,
-		f32,
-		string,
-	},
+Node :: union {
+	Op,
+	f32,
+	string,
 }
 
-eval :: proc(n: ^Node, binding: map[string]f32) -> f32 {
-	switch n.type {
-	case .Constant:
-		return n.data.(f32)
-	case .Variable:
-		val, ok := binding[n.data.(string)]
+ValGrad :: struct {
+	val:  f32,
+	grad: f32,
+}
+
+eval_grad :: proc(node: ^Node, binding: map[string]f32, respect: string) -> ValGrad {
+	switch n in node {
+	case f32:
+		return ValGrad{n, 0}
+	case string:
+		val, ok := binding[n]
+		if !ok {
+			panic("variable not found")
+		}
+		return ValGrad{val, n == respect ? 1 : 0}
+	case Op:
+		lvg := eval_grad(n.l, binding, respect)
+		rvg := eval_grad(n.r, binding, respect)
+		switch n.type {
+		case .Add:
+			return ValGrad{lvg.val + rvg.val, lvg.grad + rvg.grad}
+		case .Sub:
+			return ValGrad{lvg.val - rvg.val, lvg.grad - rvg.grad}
+		case .Mul:
+			return ValGrad{lvg.val * rvg.val, lvg.grad * rvg.val + rvg.grad * lvg.val}
+		case .Div:
+			return ValGrad {
+				lvg.val / rvg.val,
+				(lvg.grad * rvg.val - rvg.grad * lvg.val) / (rvg.val * rvg.val),
+			}
+		}
+	}
+	panic("unreachable")
+}
+
+
+eval :: proc(node: ^Node, binding: map[string]f32) -> f32 {
+	switch n in node {
+	case f32:
+		return n
+	case string:
+		val, ok := binding[n]
 		if !ok {
 			panic("variable not found")
 		}
 		return val
-	case .Add, .Sub, .Mul, .Div:
-		children := n.data.(NodeChildren)
+	case Op:
+		lv := eval(n.l, binding)
+		rv := eval(n.r, binding)
 		#partial switch n.type {
 		case .Add:
-			return eval(children.l, binding) + eval(children.r, binding)
+			return lv + rv
 		case .Sub:
-			return eval(children.l, binding) - eval(children.r, binding)
+			return lv - rv
 		case .Mul:
-			return eval(children.l, binding) * eval(children.r, binding)
+			return lv * rv
 		case .Div:
-			return eval(children.l, binding) / eval(children.r, binding)
+			return lv / rv
 		}
 	}
 	panic("unreachable")
@@ -62,7 +94,8 @@ parse :: proc(s: string) -> ^Node {
 }
 
 parse_helper :: proc(s: string, start: int) -> (^Node, int) {
-	fmt.println("Calling parse helper on %s, %v", s, start)
+	// simple recursive descent
+	// reads left tok then recurses
 	end := start
 	is_digit := true
 
@@ -76,8 +109,7 @@ parse_helper :: proc(s: string, start: int) -> (^Node, int) {
 			end += 1
 		}
 
-		l_node.type = .Variable
-		l_node.data = string(acc[:])
+		l_node^ = string(acc[:])
 	} else if (unicode.is_digit(rune(s[end]))) {
 		// constant
 		for end < len(s) && unicode.is_digit(rune(s[end])) {
@@ -90,8 +122,7 @@ parse_helper :: proc(s: string, start: int) -> (^Node, int) {
 			panic("failed parsing float")
 		}
 
-		l_node.type = .Constant
-		l_node.data = val
+		l_node^ = val
 	} else {
 		panic("not variable or constant")
 	}
@@ -105,21 +136,22 @@ parse_helper :: proc(s: string, start: int) -> (^Node, int) {
 
 	r_node, r_end := parse_helper(s, end)
 
-	o_node := new(Node, context.allocator)
+	o_node := new(Node, context.temp_allocator)
+	op_type: OpType
 	switch op {
 	case '+':
-		o_node.type = .Add
+		op_type = .Add
 	case '-':
-		o_node.type = .Sub
+		op_type = .Sub
 	case '*':
-		o_node.type = .Mul
+		op_type = .Mul
 	case '/':
-		o_node.type = .Div
+		op_type = .Div
 	case:
 		panic("not a recognized op")
 	}
 
-	o_node.data = NodeChildren{l_node, r_node}
+	o_node^ = Op{op_type, l_node, r_node}
 
 	return o_node, r_end
 }
@@ -130,17 +162,16 @@ print_ast :: proc(n: ^Node) {
 	fmt.println()
 }
 
-print_ast_helper :: proc(n: ^Node) {
+print_ast_helper :: proc(node: ^Node) {
 	fmt.print("(")
-	switch n.type {
-	case .Constant:
-		fmt.printf("%f", n.data.(f32))
-	case .Variable:
-		fmt.printf("%s", n.data.(string))
-	case .Add, .Sub, .Mul, .Div:
-		children := n.data.(NodeChildren)
-		print_ast_helper(children.l)
-		#partial switch n.type {
+	switch n in node {
+	case f32:
+		fmt.printf("%f", n)
+	case string:
+		fmt.printf("%s", n)
+	case Op:
+		print_ast_helper(n.l)
+		switch n.type {
 		case .Add:
 			fmt.printf("+")
 		case .Sub:
@@ -150,18 +181,33 @@ print_ast_helper :: proc(n: ^Node) {
 		case .Div:
 			fmt.printf("/")
 		}
-		print_ast_helper(children.r)
+		print_ast_helper(n.r)
 	}
 	fmt.print(")")
 }
 
 main :: proc() {
-	ast := parse("1+2+x")
+	ast := parse("2*3/x+1")
 	print_ast(ast)
 	val := eval(ast, map[string]f32{"x" = 2, "y" = 2})
+	fmt.printf("%v\n", val)
 
-	fmt.printf("%v", val)
+	free_all(context.temp_allocator)
 
-	// arena allocator used for most things
+	ast2 := parse("x+y*y")
+	print_ast(ast2)
+	bound := map[string]f32 {
+		"x" = 2,
+		"y" = 6,
+	}
+	dfdx := eval_grad(ast2, bound, "x")
+	dfdy := eval_grad(ast2, bound, "y")
+
+	assert(dfdx.val == 38)
+	assert(dfdy.val == 38)
+	assert(dfdx.grad == 1)
+	assert(dfdy.grad == 12)
+
+
 	free_all(context.temp_allocator)
 }
