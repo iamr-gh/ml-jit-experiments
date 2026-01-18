@@ -6,6 +6,7 @@ import "core:os"
 import "core:strconv"
 import "core:unicode"
 
+// might need to abstract a method around eval and values
 OpType :: enum {
 	Add,
 	Sub,
@@ -29,6 +30,40 @@ ValGrad :: struct {
 	val:  f32,
 	grad: f32,
 }
+
+// eventually abstract out grad one?
+eval_op :: proc(op: OpType, l, r: f32) -> f32 {
+	switch op {
+	case .Add:
+		return l + r
+	case .Sub:
+		return l - r
+	case .Mul:
+		return l * r
+	case .Div:
+		return l / r
+	}
+	return 0
+}
+
+// want a series of optimizations to collapse the tree
+// all modify in place without freeing
+constant_prop :: proc(node: ^Node) -> ^Node {
+	if op, ok := node.(Op); ok {
+		// recurse first to allow fixing of children
+		constant_prop(op.l)
+		constant_prop(op.r)
+
+		lv, l_ok := op.l.(f32)
+		rv, r_ok := op.r.(f32)
+
+		if l_ok && r_ok {
+			node^ = eval_op(op.type, lv, rv)
+		}
+	}
+	return node
+}
+
 
 eval_grad :: proc(node: ^Node, binding: map[string]f32, respect: string) -> ValGrad {
 	switch n in node {
@@ -74,16 +109,7 @@ eval :: proc(node: ^Node, binding: map[string]f32) -> f32 {
 	case Op:
 		lv := eval(n.l, binding)
 		rv := eval(n.r, binding)
-		#partial switch n.type {
-		case .Add:
-			return lv + rv
-		case .Sub:
-			return lv - rv
-		case .Mul:
-			return lv * rv
-		case .Div:
-			return lv / rv
-		}
+		return eval_op(n.type, lv, rv)
 	}
 	panic("unreachable")
 }
@@ -187,8 +213,12 @@ print_ast_helper :: proc(node: ^Node) {
 }
 
 main :: proc() {
-	ast := parse("2*3/x+1")
+	ast := parse("x*3/2+1")
 	print_ast(ast)
+
+	constant_prop(ast)
+	print_ast(ast)
+
 	val := eval(ast, map[string]f32{"x" = 2, "y" = 2})
 	fmt.printf("%v\n", val)
 
