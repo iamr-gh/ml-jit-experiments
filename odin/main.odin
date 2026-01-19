@@ -22,8 +22,8 @@ Op :: struct {
 
 Node :: union {
 	Op,
-	f32,
-	string,
+	f32, // constant
+	int, // variable, index into string arr
 }
 
 ValGrad :: struct {
@@ -65,15 +65,12 @@ constant_prop :: proc(node: ^Node) -> ^Node {
 }
 
 
-eval_grad :: proc(node: ^Node, binding: map[string]f32, respect: string) -> ValGrad {
+eval_grad :: proc(node: ^Node, binding: []f32, respect: int) -> ValGrad {
 	switch n in node {
 	case f32:
 		return ValGrad{n, 0}
-	case string:
-		val, ok := binding[n]
-		if !ok {
-			panic("variable not found")
-		}
+	case int:
+		val := binding[n]
 		return ValGrad{val, n == respect ? 1 : 0}
 	case Op:
 		lvg := eval_grad(n.l, binding, respect)
@@ -96,15 +93,12 @@ eval_grad :: proc(node: ^Node, binding: map[string]f32, respect: string) -> ValG
 }
 
 
-eval :: proc(node: ^Node, binding: map[string]f32) -> f32 {
+eval :: proc(node: ^Node, binding: []f32) -> f32 {
 	switch n in node {
 	case f32:
 		return n
-	case string:
-		val, ok := binding[n]
-		if !ok {
-			panic("variable not found")
-		}
+	case int:
+		val := binding[n]
 		return val
 	case Op:
 		lv := eval(n.l, binding)
@@ -114,12 +108,23 @@ eval :: proc(node: ^Node, binding: map[string]f32) -> f32 {
 	panic("unreachable")
 }
 
-parse :: proc(s: string) -> ^Node {
-	ast, end := parse_helper(s, 0)
-	return ast
+binding_to_arr :: proc(binding: map[string]f32, var_idx: map[string]int) -> []f32 {
+	arr: [dynamic]f32 // gc handled by arena alloc
+	resize(&arr, len(var_idx))
+	for s, idx in var_idx {
+		arr[idx] = binding[s]
+	}
+	return arr[:]
 }
 
-parse_helper :: proc(s: string, start: int) -> (^Node, int) {
+parse :: proc(s: string) -> (^Node, map[string]int) {
+	found_map := map[string]int{}
+	ast, end := parse_helper(s, 0, &found_map)
+	return ast, found_map
+}
+
+// this pass by pointer shouldn't be needed??
+parse_helper :: proc(s: string, start: int, found: ^map[string]int) -> (^Node, int) {
 	// simple recursive descent
 	// reads left tok then recurses
 	end := start
@@ -135,7 +140,13 @@ parse_helper :: proc(s: string, start: int) -> (^Node, int) {
 			end += 1
 		}
 
-		l_node^ = string(acc[:])
+		var_s := string(acc[:])
+		var_idx, ok := found[var_s]
+		if !ok {
+			var_idx = len(found) + 1
+			found[var_s] = var_idx
+		}
+		l_node^ = var_idx
 	} else if (unicode.is_digit(rune(s[end]))) {
 		// constant
 		for end < len(s) && unicode.is_digit(rune(s[end])) {
@@ -160,7 +171,7 @@ parse_helper :: proc(s: string, start: int) -> (^Node, int) {
 	op := rune(s[end])
 	end += 1
 
-	r_node, r_end := parse_helper(s, end)
+	r_node, r_end := parse_helper(s, end, found)
 
 	o_node := new(Node, context.temp_allocator)
 	op_type: OpType
@@ -183,20 +194,27 @@ parse_helper :: proc(s: string, start: int) -> (^Node, int) {
 }
 
 // normal %#v won't recurse all pointers
-print_ast :: proc(n: ^Node) {
-	print_ast_helper(n)
+print_ast :: proc(n: ^Node, var_map: map[string]int) {
+	inverse_map := map[int]string{}
+	for k, v in var_map {
+		inverse_map[v] = k
+	}
+
+	print_ast_helper(n, inverse_map)
 	fmt.println()
 }
 
-print_ast_helper :: proc(node: ^Node) {
+print_ast_helper :: proc(node: ^Node, var_map: map[int]string) {
 	fmt.print("(")
 	switch n in node {
 	case f32:
 		fmt.printf("%f", n)
-	case string:
-		fmt.printf("%s", n)
+	case int:
+		val, ok := var_map[n]
+		assert(ok)
+		fmt.printf("%s", val)
 	case Op:
-		print_ast_helper(n.l)
+		print_ast_helper(n.l, var_map)
 		switch n.type {
 		case .Add:
 			fmt.printf("+")
@@ -207,31 +225,40 @@ print_ast_helper :: proc(node: ^Node) {
 		case .Div:
 			fmt.printf("/")
 		}
-		print_ast_helper(n.r)
+		print_ast_helper(n.r, var_map)
 	}
 	fmt.print(")")
 }
 
 main :: proc() {
-	ast := parse("x*3/2+1")
-	print_ast(ast)
+	// I really just want everything in arena allocator for now
+	old_allocator := context.allocator
+	context.allocator = context.temp_allocator
+	defer context.allocator = old_allocator
+
+	ast, vars := parse("x*3/2+1")
+	fmt.printf("vars: %v\n", vars)
+	print_ast(ast, vars)
 
 	constant_prop(ast)
-	print_ast(ast)
+	print_ast(ast, vars)
 
-	val := eval(ast, map[string]f32{"x" = 2, "y" = 2})
+	val := eval(ast, binding_to_arr(map[string]f32{"x" = 2, "y" = 2}, vars))
 	fmt.printf("%v\n", val)
 
 	free_all(context.temp_allocator)
 
-	ast2 := parse("x+y*y")
-	print_ast(ast2)
-	bound := map[string]f32 {
+	ast2, vars2 := parse("x+y*y")
+	print_ast(ast2, vars2)
+	vals := map[string]f32 {
 		"x" = 2,
 		"y" = 6,
 	}
-	dfdx := eval_grad(ast2, bound, "x")
-	dfdy := eval_grad(ast2, bound, "y")
+
+	bound := binding_to_arr(vals, vars2)
+
+	dfdx := eval_grad(ast2, bound, vars["x"])
+	dfdy := eval_grad(ast2, bound, vars["y"])
 
 	assert(dfdx.val == 38)
 	assert(dfdy.val == 38)
