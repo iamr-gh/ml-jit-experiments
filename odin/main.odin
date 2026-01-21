@@ -6,7 +6,6 @@ import "core:os"
 import "core:strconv"
 import "core:unicode"
 
-// might need to abstract a method around eval and values
 OpType :: enum {
 	Add,
 	Sub,
@@ -230,41 +229,13 @@ print_ast_helper :: proc(node: ^Node, var_map: map[int]string) {
 	fmt.print(")")
 }
 
+
 main :: proc() {
-	// I really just want everything in arena allocator for now
 	old_allocator := context.allocator
-	context.allocator = context.temp_allocator
+	context.allocator = context.temp_allocator // make arena alloc default
 	defer context.allocator = old_allocator
 
-	ast, vars := parse("x*3/2+1")
-	fmt.printf("vars: %v\n", vars)
-	print_ast(ast, vars)
-
-	constant_prop(ast)
-	print_ast(ast, vars)
-
-	val := eval(ast, binding_to_arr(map[string]f32{"x" = 2, "y" = 2}, vars))
-	fmt.printf("%v\n", val)
-
-	free_all(context.temp_allocator)
-
-	ast2, vars2 := parse("x+y*y")
-	print_ast(ast2, vars2)
-	vals := map[string]f32 {
-		"x" = 2,
-		"y" = 6,
-	}
-
-	bound := binding_to_arr(vals, vars2)
-
-	dfdx := eval_grad(ast2, bound, vars["x"])
-	dfdy := eval_grad(ast2, bound, vars["y"])
-
-	assert(dfdx.val == 38)
-	assert(dfdy.val == 38)
-	assert(dfdx.grad == 1)
-	assert(dfdy.grad == 12)
-
-
-	free_all(context.temp_allocator)
+	// basic_test()
+	// eval_vm_basic_test()
+	time_base_test()
 }

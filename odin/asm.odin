@@ -1,0 +1,112 @@
+package main
+
+import "core:fmt"
+
+// want to support just a small number of instructions
+Reg :: enum {
+	R1,
+	R2,
+	R3,
+	R4,
+	R5,
+	Ret,
+}
+
+// apparently fadd.S is the instruction I want
+// and there are special fp registers
+
+// I do need them all to be f32 for now
+FAddI :: struct {
+	src: Reg,
+	imm: f32,
+	dst: Reg,
+}
+
+FMov :: struct {
+	src: Reg,
+	dst: Reg,
+}
+
+FMovI :: struct {
+	imm: f32,
+	dst: Reg,
+}
+
+FAdd :: struct {
+	src1: Reg,
+	src2: Reg,
+	dst:  Reg,
+}
+
+FSub :: struct {
+	src1: Reg,
+	src2: Reg,
+	dst:  Reg,
+}
+
+FMulI :: struct {
+	src: Reg,
+	imm: f32,
+	dst: Reg,
+}
+
+FMul :: struct {
+	src1: Reg,
+	src2: Reg,
+	dst:  Reg,
+}
+
+FDiv :: struct {
+	src1: Reg,
+	src2: Reg,
+	dst:  Reg,
+}
+
+
+// the small amount of virtual instructions I support, which will get generated into asm
+VInstr :: union {
+	FAdd,
+	FSub,
+	FAddI,
+	FMul,
+	FMulI,
+	FDiv,
+	FMov,
+	FMovI,
+}
+
+
+// small virtual machine before I get real jit working
+simulate :: proc(intrs: []VInstr) -> f32 {
+	state: [Reg]f32
+	pc := 0
+	for pc < len(intrs) {
+		inst := intrs[pc]
+		switch i in inst {
+		case FAddI:
+			state[i.dst] = state[i.src] + i.imm
+		case FAdd:
+			state[i.dst] = state[i.src1] + state[i.src2]
+		case FSub:
+			state[i.dst] = state[i.src1] - state[i.src2]
+		case FMulI:
+			state[i.dst] = state[i.src] * i.imm
+		case FMul:
+			state[i.dst] = state[i.src1] * state[i.src2]
+		case FDiv:
+			state[i.dst] = state[i.src1] / state[i.src2]
+		case FMov:
+			state[i.dst] = state[i.src]
+		case FMovI:
+			state[i.dst] = i.imm
+		}
+		pc += 1
+	}
+
+	return state[.Ret]
+}
+
+
+// eventually will have real instructions which convert to binary
+
+// write to a file initially, eventually write the bytes directly
