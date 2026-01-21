@@ -75,13 +75,13 @@ VInstr :: union {
 	FMovI,
 }
 
-
 // small virtual machine before I get real jit working
-simulate :: proc(intrs: []VInstr) -> f32 {
+simulate :: proc(instrs: []VInstr) -> f32 {
 	state: [Reg]f32
+
 	pc := 0
-	for pc < len(intrs) {
-		inst := intrs[pc]
+	for pc < len(instrs) {
+		inst := instrs[pc]
 		switch i in inst {
 		case FAddI:
 			state[i.dst] = state[i.src] + i.imm
@@ -104,6 +104,43 @@ simulate :: proc(intrs: []VInstr) -> f32 {
 	}
 
 	return state[.Ret]
+}
+
+Push :: struct {
+	imm: f32,
+}
+
+// very simple stack machine, may eventually expand
+VInstrStack :: union {
+	Push,
+	OpType,
+}
+
+simulate_stack :: proc(instrs: []VInstrStack) -> f32 {
+	stack: [dynamic]f32
+
+	// no pc is faster
+	for inst in instrs {
+		switch i in inst {
+		case Push:
+			append(&stack, i.imm)
+		case OpType:
+			r := pop(&stack)
+			l := pop(&stack)
+			switch i {
+			case .Add:
+				append(&stack, l + r)
+			case .Sub:
+				append(&stack, l - r)
+			case .Mul:
+				append(&stack, l * r)
+			case .Div:
+				append(&stack, l / r)
+			}
+		}
+		// pc += 1
+	}
+	return stack[len(stack) - 1]
 }
 
 

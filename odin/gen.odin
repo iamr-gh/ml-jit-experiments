@@ -30,3 +30,24 @@ compile_forward_helper :: proc(tree: ^Node, out: ^[dynamic]VInstr) {
 	// need to read from inputted mem location
 	}
 }
+
+compile_forward_stack :: proc(tree: ^Node) -> [dynamic]VInstrStack {
+	out := [dynamic]VInstrStack{}
+	compile_forward_stack_helper(tree, &out)
+	return out
+}
+compile_forward_stack_helper :: proc(tree: ^Node, out: ^[dynamic]VInstrStack) {
+	switch n in tree {
+	case Op:
+		// works if l is always constant or var
+		// if it's not, we'll need to add stack
+		compile_forward_stack_helper(n.l, out)
+		compile_forward_stack_helper(n.r, out)
+		append(out, n.type)
+	case f32:
+		append(out, Push{imm = n})
+	case int:
+	// need to read from inputted mem location
+	}
+
+}
