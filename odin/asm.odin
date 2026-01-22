@@ -116,6 +116,7 @@ VInstrStack :: union {
 	OpType,
 }
 
+
 simulate_stack :: proc(instrs: []VInstrStack) -> f32 {
 	stack: [dynamic]f32
 
@@ -139,6 +140,40 @@ simulate_stack :: proc(instrs: []VInstrStack) -> f32 {
 			}
 		}
 		// pc += 1
+	}
+	return stack[len(stack) - 1]
+}
+
+// could write a translator from earlier IRs to this
+VInstrStackTiny :: i64
+simulate_stack_tiny :: proc(instrs: []VInstrStackTiny) -> f32 {
+	stack: [dynamic]f32
+	for inst in instrs {
+		if inst & 0b111 == 0 {
+			// push
+			bits := u32(inst >> 32)
+			append(&stack, transmute(f32)bits)
+		} else {
+			// op
+			r := pop(&stack)
+			l := pop(&stack)
+
+			// invariant, rest of values are 0s
+			switch inst {
+			case 0b1:
+				// add
+				append(&stack, l + r)
+			case 0b10:
+				// sub
+				append(&stack, l - r)
+			case 0b11:
+				// mul
+				append(&stack, l * r)
+			case 0b100:
+				// div
+				append(&stack, l / r)
+			}
+		}
 	}
 	return stack[len(stack) - 1]
 }
