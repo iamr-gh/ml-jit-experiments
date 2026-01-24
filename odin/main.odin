@@ -237,5 +237,5 @@ main :: proc() {
 
 	// basic_test()
 	// eval_vm_basic_test()
-	time_base_test()
+	// time_base_test()
 }

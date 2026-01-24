@@ -4,7 +4,7 @@ import "core:fmt"
 
 // want to support just a small number of instructions
 Reg :: enum {
-	R1,
+	R1 = 0,
 	R2,
 	R3,
 	R4,
@@ -75,13 +75,13 @@ VInstr :: union {
 	FMovI,
 }
 
+
 // small virtual machine before I get real jit working
 simulate :: proc(instrs: []VInstr) -> f32 {
 	state: [Reg]f32
 
-	pc := 0
-	for pc < len(instrs) {
-		inst := instrs[pc]
+	// explicit PC is much slower this
+	for inst in instrs {
 		switch i in inst {
 		case FAddI:
 			state[i.dst] = state[i.src] + i.imm
@@ -100,7 +100,6 @@ simulate :: proc(instrs: []VInstr) -> f32 {
 		case FMovI:
 			state[i.dst] = i.imm
 		}
-		pc += 1
 	}
 
 	return state[.Ret]
