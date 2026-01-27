@@ -107,17 +107,17 @@ eval_vm_basic_test :: proc() {
 }
 
 basic_test :: proc() {
-	ast, vars := parse("x*3/2+1")
-	fmt.printf("vars: %v\n", vars)
-	print_ast(ast, vars)
-
-	constant_prop(ast)
-	print_ast(ast, vars)
-
-	val := eval(ast, binding_to_arr(map[string]f32{"x" = 2, "y" = 2}, vars))
-	fmt.printf("%v\n", val)
-
-	free_all(context.temp_allocator)
+	// ast, vars := parse("x*3/2+1")
+	// fmt.printf("vars: %v\n", vars)
+	// print_ast(ast, vars)
+	//
+	// constant_prop(ast)
+	// print_ast(ast, vars)
+	//
+	// val := eval(ast, binding_to_arr(map[string]f32{"x" = 2, "y" = 2}, vars))
+	// fmt.printf("%v\n", val)
+	//
+	// free_all(context.temp_allocator)
 
 	ast2, vars2 := parse("x+y*y")
 	print_ast(ast2, vars2)
@@ -128,13 +128,21 @@ basic_test :: proc() {
 
 	bound := binding_to_arr(vals, vars2)
 
-	dfdx := eval_grad(ast2, bound, vars["x"])
-	dfdy := eval_grad(ast2, bound, vars["y"])
+
+	dfdx := eval_grad_forward(ast2, bound, vars2["x"])
+	dfdy := eval_grad_forward(ast2, bound, vars2["y"])
 
 	assert(dfdx.val == 38)
 	assert(dfdy.val == 38)
 	assert(dfdx.grad == 1)
 	assert(dfdy.grad == 12)
+
+	reverse_val, grads := eval_grad_reverse(ast2, bound)
+	fmt.printf("reverse grads: {}, {}\n", grads, []f32{dfdx.grad, dfdy.grad})
+
+	assert(reverse_val == dfdx.val)
+	assert(dfdx.grad == grads[vars2["x"]])
+	assert(dfdy.grad == grads[vars2["y"]])
 
 	free_all(context.temp_allocator)
 }

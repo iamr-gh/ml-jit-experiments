@@ -64,7 +64,7 @@ constant_prop :: proc(node: ^Node) -> ^Node {
 }
 
 
-eval_grad :: proc(node: ^Node, binding: []f32, respect: int) -> ValGrad {
+eval_grad_forward :: proc(node: ^Node, binding: []f32, respect: int) -> ValGrad {
 	switch n in node {
 	case f32:
 		return ValGrad{n, 0}
@@ -72,8 +72,8 @@ eval_grad :: proc(node: ^Node, binding: []f32, respect: int) -> ValGrad {
 		val := binding[n]
 		return ValGrad{val, n == respect ? 1 : 0}
 	case Op:
-		lvg := eval_grad(n.l, binding, respect)
-		rvg := eval_grad(n.r, binding, respect)
+		lvg := eval_grad_forward(n.l, binding, respect)
+		rvg := eval_grad_forward(n.r, binding, respect)
 		switch n.type {
 		case .Add:
 			return ValGrad{lvg.val + rvg.val, lvg.grad + rvg.grad}
@@ -92,6 +92,76 @@ eval_grad :: proc(node: ^Node, binding: []f32, respect: int) -> ValGrad {
 }
 
 
+// computes with respect to all
+eval_grad_reverse :: proc(node: ^Node, binding: []f32) -> (f32, []f32) {
+	binding_grads := [dynamic]f32{}
+	resize(&binding_grads, len(binding))
+
+	// could be stored more efficiently
+	activation_cache: map[^Node]f32
+	val := eval_grad_reverse_helper_forward(node, binding, &activation_cache)
+
+	grad_cache: map[^Node]f32
+	grad_cache[node] = 1
+	eval_grad_reverse_helper_backward(node, binding_grads[:], &activation_cache, &grad_cache)
+
+	return val, binding_grads[:]
+}
+
+eval_grad_reverse_helper_forward :: proc(
+	node: ^Node,
+	binding: []f32,
+	activation_cache: ^map[^Node]f32,
+) -> f32 {
+	val: f32
+	switch n in node {
+	case f32:
+		val = n
+	case int:
+		val = binding[n]
+	case Op:
+		lv := eval_grad_reverse_helper_forward(n.l, binding, activation_cache)
+		rv := eval_grad_reverse_helper_forward(n.r, binding, activation_cache)
+		val = eval_op(n.type, lv, rv)
+	}
+	activation_cache[node] = val
+	return val
+}
+
+eval_grad_reverse_helper_backward :: proc(
+	node: ^Node,
+	binding_grads: []f32,
+	activation_cache: ^map[^Node]f32,
+	grad_cache: ^map[^Node]f32,
+) {
+	switch n in node {
+	case f32:
+		return
+	case int:
+		// gradients accumulate in vars
+		// because they can show up in different places
+		binding_grads[n] += grad_cache[node]
+	case Op:
+		switch n.type {
+		case .Add, .Sub:
+			grad_cache[n.l] = grad_cache[node]
+			grad_cache[n.r] = grad_cache[node]
+		case .Mul:
+			grad_cache[n.l] = grad_cache[node] * activation_cache[n.r]
+			grad_cache[n.r] = grad_cache[node] * activation_cache[n.l]
+		case .Div:
+		// annoying?
+		// grad_cache[n.l] =
+		// return ValGrad {
+		// 	lvg.val / rvg.val,
+		// 	(lvg.grad * rvg.val - rvg.grad * lvg.val) / (rvg.val * rvg.val),
+		// }
+		}
+		eval_grad_reverse_helper_backward(n.l, binding_grads, activation_cache, grad_cache)
+		eval_grad_reverse_helper_backward(n.r, binding_grads, activation_cache, grad_cache)
+	}
+}
+
 eval :: proc(node: ^Node, binding: []f32) -> f32 {
 	switch n in node {
 	case f32:
@@ -109,7 +179,7 @@ eval :: proc(node: ^Node, binding: []f32) -> f32 {
 
 binding_to_arr :: proc(binding: map[string]f32, var_idx: map[string]int) -> []f32 {
 	arr: [dynamic]f32 // gc handled by arena alloc
-	resize(&arr, len(var_idx))
+	resize(&arr, len(var_idx) + 1)
 	for s, idx in var_idx {
 		arr[idx] = binding[s]
 	}
@@ -235,7 +305,7 @@ main :: proc() {
 	context.allocator = context.temp_allocator // make arena alloc default
 	defer context.allocator = old_allocator
 
-	// basic_test()
+	basic_test()
 	// eval_vm_basic_test()
 	// time_base_test()
 }
