@@ -144,6 +144,13 @@ basic_test :: proc() {
 	assert(dfdx.grad == grads[vars2["x"]])
 	assert(dfdy.grad == grads[vars2["y"]])
 
+	all_val, all_grads := eval_grad_forward_all(ast2, bound)
+	fmt.printf("forward all grads: {}, {}\n", all_grads, []f32{dfdx.grad, dfdy.grad})
+
+	assert(reverse_val == dfdx.val)
+	assert(dfdx.grad == all_grads[vars2["x"]])
+	assert(dfdy.grad == all_grads[vars2["y"]])
+
 	free_all(context.temp_allocator)
 }
 

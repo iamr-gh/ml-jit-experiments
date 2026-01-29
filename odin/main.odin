@@ -25,10 +25,6 @@ Node :: union {
 	int, // variable, index into string arr
 }
 
-ValGrad :: struct {
-	val:  f32,
-	grad: f32,
-}
 
 // eventually abstract out grad one?
 eval_op :: proc(op: OpType, l, r: f32) -> f32 {
@@ -64,6 +60,12 @@ constant_prop :: proc(node: ^Node) -> ^Node {
 }
 
 
+ValGrad :: struct {
+	val:  f32,
+	grad: f32,
+}
+
+// should create a respect to all situation
 eval_grad_forward :: proc(node: ^Node, binding: []f32, respect: int) -> ValGrad {
 	switch n in node {
 	case f32:
@@ -86,6 +88,53 @@ eval_grad_forward :: proc(node: ^Node, binding: []f32, respect: int) -> ValGrad 
 				lvg.val / rvg.val,
 				(lvg.grad * rvg.val - rvg.grad * lvg.val) / (rvg.val * rvg.val),
 			}
+		}
+	}
+	panic("unreachable")
+}
+
+// propogate grads of all variables
+// yes, this will scale badly at high param counts
+// might be worth testing at what point that is
+eval_grad_forward_all :: proc(node: ^Node, binding: []f32) -> (f32, []f32) {
+	// need to figure out a more efficient alloc structure
+	grads: [dynamic]f32
+	resize(&grads, len(binding)) // zero initialized
+
+	switch n in node {
+	case f32:
+		return n, grads[:]
+	case int:
+		val := binding[n]
+		grads[n] = 1
+		return val, grads[:]
+	case Op:
+		lv, lgrad := eval_grad_forward_all(n.l, binding)
+		rv, rgrad := eval_grad_forward_all(n.r, binding)
+		switch n.type {
+		case .Add:
+			for i in 0 ..< len(binding) {
+				grads[i] = lgrad[i] + rgrad[i]
+			}
+
+			return lv + rv, grads[:]
+		case .Sub:
+			for i in 0 ..< len(binding) {
+				grads[i] = lgrad[i] - rgrad[i]
+			}
+
+			return lv - rv, grads[:]
+		case .Mul:
+			for i in 0 ..< len(binding) {
+				grads[i] = lgrad[i] * rv + rgrad[i] * lv
+			}
+
+			return lv * rv, grads[:]
+		case .Div:
+			for i in 0 ..< len(binding) {
+				grads[i] = (lgrad[i] * rv - rgrad[i] * lv) / (rv * rv)
+			}
+			return lv / rv, grads[:]
 		}
 	}
 	panic("unreachable")
@@ -150,6 +199,9 @@ eval_grad_reverse_helper_backward :: proc(
 			grad_cache[n.l] = grad_cache[node] * activation_cache[n.r]
 			grad_cache[n.r] = grad_cache[node] * activation_cache[n.l]
 		case .Div:
+		// you just need to split and rearrange for each side
+		// totally possible, just need to write it out
+
 		// annoying?
 		// grad_cache[n.l] =
 		// return ValGrad {
