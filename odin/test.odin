@@ -52,6 +52,24 @@ time_eval :: proc(ast: ^Node, vars: []f64, runs: int) -> stats {
 	return stats{m, variance, math.sqrt(variance) / m}
 }
 
+time_forward_vs_reverse :: proc() {
+	ast, vars := parse("5*z+1-3+4*2/5+9-11*y/7")
+	vals := map[string]f32 {
+		"x" = 2,
+		"y" = 6,
+		"z" = 10,
+	}
+
+	bound := binding_to_arr(vals, vars)
+
+	NUM_RUNS := 100
+	forward_stats := time_grad_forward(ast, bound, NUM_RUNS)
+	reverse_stats := time_grad_reverse(ast, bound, NUM_RUNS)
+
+	fmt.printf("Forward:{}\n", forward_stats)
+	fmt.printf("Reverse:{}\n", reverse_stats)
+}
+
 
 time_base_test :: proc() {
 	fmt.println("Basic time test, forward eval vs sim")
@@ -232,6 +250,71 @@ time_sim_tiny :: proc(instrs: []VInstrStackTiny, runs: int) -> stats {
 		time.stopwatch_start(&sw)
 		for _ in 0 ..< inner_runs {
 			simulate_stack_tiny(instrs)
+		}
+		time.stopwatch_stop(&sw)
+		x := time.duration_milliseconds(time.stopwatch_duration(sw))
+
+		if n == 1 {
+			m = x
+		} else {
+			m_new := next_mean(m, n, x)
+			squares = next_squares(squares, m, m_new, x)
+			m = m_new
+		}
+	}
+
+	variance := squares / f64(n)
+
+	return stats{m, variance, math.sqrt(variance) / m}
+}
+
+
+time_grad_forward :: proc(node: ^Node, binding: []f32, runs: int) -> stats {
+	sw: time.Stopwatch
+
+	m, squares: f64
+	n: int
+
+	inner_runs := 1000
+
+	for _ in 0 ..< runs {
+		n += 1
+		time.stopwatch_reset(&sw)
+		time.stopwatch_start(&sw)
+		for _ in 0 ..< inner_runs {
+			eval_grad_forward_all(node, binding)
+		}
+		time.stopwatch_stop(&sw)
+		x := time.duration_milliseconds(time.stopwatch_duration(sw))
+
+		if n == 1 {
+			m = x
+		} else {
+			m_new := next_mean(m, n, x)
+			squares = next_squares(squares, m, m_new, x)
+			m = m_new
+		}
+	}
+
+	variance := squares / f64(n)
+
+	return stats{m, variance, math.sqrt(variance) / m}
+}
+
+time_grad_reverse :: proc(node: ^Node, binding: []f32, runs: int) -> stats {
+	sw: time.Stopwatch
+
+	m, squares: f64
+	n: int
+
+	inner_runs := 1000
+
+	for _ in 0 ..< runs {
+		n += 1
+		time.stopwatch_reset(&sw)
+		time.stopwatch_start(&sw)
+		for _ in 0 ..< inner_runs {
+			eval_grad_reverse(node, binding)
 		}
 		time.stopwatch_stop(&sw)
 		x := time.duration_milliseconds(time.stopwatch_duration(sw))

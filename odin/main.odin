@@ -357,7 +357,8 @@ main :: proc() {
 	context.allocator = context.temp_allocator // make arena alloc default
 	defer context.allocator = old_allocator
 
-	basic_test()
+	// basic_test()
 	// eval_vm_basic_test()
 	// time_base_test()
+	time_forward_vs_reverse()
 }
