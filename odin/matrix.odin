@@ -29,6 +29,4 @@ matrix_testing :: proc() {
 	// what I want to do
 	// linear regression y = Ax + B
 	m: matrix[4, 2]f32
-
-
 }
