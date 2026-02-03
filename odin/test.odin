@@ -332,3 +332,232 @@ time_grad_reverse :: proc(node: ^Node, binding: []f32, runs: int) -> stats {
 
 	return stats{m, variance, math.sqrt(variance) / m}
 }
+
+// Helper to create a NodeMatrix from constant f32 values
+makeConstNodeMatrix :: proc(rows: int, cols: int, values: []f32) -> NodeMatrix {
+	assert(len(values) == rows * cols)
+	data: [dynamic]Node
+	resize(&data, len(values))
+	for i in 0 ..< len(values) {
+		data[i] = values[i]
+	}
+	return NodeMatrix{rows, cols, data[:]}
+}
+
+// Test binaryOpNodeMat with element-wise addition
+test_binaryOpNodeMat_add :: proc() {
+	fmt.println("Testing binaryOpNodeMat (Add)...")
+
+	// 2x2 matrices
+	a := makeConstNodeMatrix(2, 2, []f32{1, 2, 3, 4})
+	b := makeConstNodeMatrix(2, 2, []f32{5, 6, 7, 8})
+
+	result := binaryOpNodeMat(.Add, &a, &b)
+
+	// Expected: [6, 8, 10, 12]
+	assert(result.r == 2 && result.c == 2)
+	assert(eval(&result.data[0], nil) == 6)
+	assert(eval(&result.data[1], nil) == 8)
+	assert(eval(&result.data[2], nil) == 10)
+	assert(eval(&result.data[3], nil) == 12)
+
+	fmt.println("  binaryOpNodeMat (Add) passed!")
+}
+
+// Test binaryOpNodeMat with element-wise multiplication
+test_binaryOpNodeMat_mul :: proc() {
+	fmt.println("Testing binaryOpNodeMat (Mul)...")
+
+	// 2x2 matrices
+	a := makeConstNodeMatrix(2, 2, []f32{1, 2, 3, 4})
+	b := makeConstNodeMatrix(2, 2, []f32{5, 6, 7, 8})
+
+	result := binaryOpNodeMat(.Mul, &a, &b)
+
+	// Expected: [5, 12, 21, 32]
+	assert(result.r == 2 && result.c == 2)
+	assert(eval(&result.data[0], nil) == 5)
+	assert(eval(&result.data[1], nil) == 12)
+	assert(eval(&result.data[2], nil) == 21)
+	assert(eval(&result.data[3], nil) == 32)
+
+	fmt.println("  binaryOpNodeMat (Mul) passed!")
+}
+
+// Test reduceNodeMat with addition (sum)
+test_reduceNodeMat :: proc() {
+	fmt.println("Testing reduceNodeMat (Add)...")
+
+	// 1x4 matrix (vector)
+	a := makeConstNodeMatrix(1, 4, []f32{1, 2, 3, 4})
+
+	result := reduceNodeMat(.Add, &a)
+
+	// Expected: 1 + 2 + 3 + 4 = 10
+	assert(eval(result, nil) == 10)
+
+	fmt.println("  reduceNodeMat (Add) passed!")
+}
+
+// Test getRow
+test_getRow :: proc() {
+	fmt.println("Testing getRow...")
+
+	// 2x3 matrix
+	a := makeConstNodeMatrix(2, 3, []f32{1, 2, 3, 4, 5, 6})
+
+	row0 := getRow(&a, 0)
+	row1 := getRow(&a, 1)
+
+	// Row 0 should be [1, 2, 3]
+	assert(row0.r == 1 && row0.c == 3)
+	assert(eval(&row0.data[0], nil) == 1)
+	assert(eval(&row0.data[1], nil) == 2)
+	assert(eval(&row0.data[2], nil) == 3)
+
+	// Row 1 should be [4, 5, 6]
+	assert(row1.r == 1 && row1.c == 3)
+	assert(eval(&row1.data[0], nil) == 4)
+	assert(eval(&row1.data[1], nil) == 5)
+	assert(eval(&row1.data[2], nil) == 6)
+
+	fmt.println("  getRow passed!")
+}
+
+// Test getCol
+test_getCol :: proc() {
+	fmt.println("Testing getCol...")
+
+	// 2x3 matrix
+	a := makeConstNodeMatrix(2, 3, []f32{1, 2, 3, 4, 5, 6})
+
+	col0 := getCol(&a, 0)
+	col1 := getCol(&a, 1)
+	col2 := getCol(&a, 2)
+
+	// Col 0 should be [1, 4]
+	assert(col0.r == 2 && col0.c == 1)
+	assert(eval(&col0.data[0], nil) == 1)
+	assert(eval(&col0.data[1], nil) == 4)
+
+	// Col 1 should be [2, 5]
+	assert(col1.r == 2 && col1.c == 1)
+	assert(eval(&col1.data[0], nil) == 2)
+	assert(eval(&col1.data[1], nil) == 5)
+
+	// Col 2 should be [3, 6]
+	assert(col2.r == 2 && col2.c == 1)
+	assert(eval(&col2.data[0], nil) == 3)
+	assert(eval(&col2.data[1], nil) == 6)
+
+	fmt.println("  getCol passed!")
+}
+
+// Test dotNodeMat
+test_dotNodeMat :: proc() {
+	fmt.println("Testing dotNodeMat...")
+
+	// Two vectors of length 3
+	a := makeConstNodeMatrix(1, 3, []f32{1, 2, 3})
+	b := makeConstNodeMatrix(1, 3, []f32{4, 5, 6})
+
+	result := dotNodeMat(&a, &b)
+
+	// Expected: 1*4 + 2*5 + 3*6 = 4 + 10 + 18 = 32
+	assert(eval(result, nil) == 32)
+
+	fmt.println("  dotNodeMat passed!")
+}
+
+// Test multNodeMat - basic matrix multiplication
+test_multNodeMat_basic :: proc() {
+	fmt.println("Testing multNodeMat (basic)...")
+
+	// A: 2x3 matrix
+	// [1, 2, 3]
+	// [4, 5, 6]
+	a := makeConstNodeMatrix(2, 3, []f32{1, 2, 3, 4, 5, 6})
+
+	// B: 3x2 matrix
+	// [7,  8]
+	// [9,  10]
+	// [11, 12]
+	b := makeConstNodeMatrix(3, 2, []f32{7, 8, 9, 10, 11, 12})
+
+	result := multNodeMat(&a, &b)
+
+	// Expected result: 2x2 matrix
+	// [1*7+2*9+3*11,  1*8+2*10+3*12]  = [58, 64]
+	// [4*7+5*9+6*11,  4*8+5*10+6*12]  = [139, 154]
+	assert(result.r == 2 && result.c == 2)
+	assert(eval(&result.data[0], nil) == 58)   // [0,0]
+	assert(eval(&result.data[1], nil) == 64)   // [0,1]
+	assert(eval(&result.data[2], nil) == 139)  // [1,0]
+	assert(eval(&result.data[3], nil) == 154)  // [1,1]
+
+	fmt.println("  multNodeMat (basic) passed!")
+}
+
+// Test multNodeMat - identity matrix
+test_multNodeMat_identity :: proc() {
+	fmt.println("Testing multNodeMat (identity)...")
+
+	// A: 2x2 matrix
+	// [1, 2]
+	// [3, 4]
+	a := makeConstNodeMatrix(2, 2, []f32{1, 2, 3, 4})
+
+	// I: 2x2 identity matrix
+	// [1, 0]
+	// [0, 1]
+	identity := makeConstNodeMatrix(2, 2, []f32{1, 0, 0, 1})
+
+	result := multNodeMat(&a, &identity)
+
+	// A * I = A
+	assert(result.r == 2 && result.c == 2)
+	assert(eval(&result.data[0], nil) == 1)
+	assert(eval(&result.data[1], nil) == 2)
+	assert(eval(&result.data[2], nil) == 3)
+	assert(eval(&result.data[3], nil) == 4)
+
+	fmt.println("  multNodeMat (identity) passed!")
+}
+
+// Test multNodeMat - vector-matrix multiplication
+test_multNodeMat_vector :: proc() {
+	fmt.println("Testing multNodeMat (vector)...")
+
+	// Row vector: 1x3
+	v := makeConstNodeMatrix(1, 3, []f32{1, 2, 3})
+
+	// Matrix: 3x2
+	m := makeConstNodeMatrix(3, 2, []f32{1, 2, 3, 4, 5, 6})
+
+	result := multNodeMat(&v, &m)
+
+	// Expected: 1x2 vector
+	// [1*1+2*3+3*5, 1*2+2*4+3*6] = [22, 28]
+	assert(result.r == 1 && result.c == 2)
+	assert(eval(&result.data[0], nil) == 22)
+	assert(eval(&result.data[1], nil) == 28)
+
+	fmt.println("  multNodeMat (vector) passed!")
+}
+
+// Run all NodeMatrix tests
+test_node_matrix_all :: proc() {
+	fmt.println("\n=== Running NodeMatrix Tests ===")
+
+	test_binaryOpNodeMat_add()
+	test_binaryOpNodeMat_mul()
+	test_reduceNodeMat()
+	test_getRow()
+	test_getCol()
+	test_dotNodeMat()
+	test_multNodeMat_basic()
+	test_multNodeMat_identity()
+	test_multNodeMat_vector()
+
+	fmt.println("=== All NodeMatrix Tests Passed! ===\n")
+}
