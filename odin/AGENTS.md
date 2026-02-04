@@ -8,3 +8,9 @@ This will eventually include, but is not limited to, a gradient engine, a tensor
 Do not generate extraneous comments in the codebase. 
 Strive to explain code with descriptive names and simple logic.
 Only use comments when meaning would not be clear to a human who was an expert.
+
+## Files
+
+``grad_single.odin`` specified a gradient engine for single variable expressions, where eval_grad_forward_all and eval_grad_reverse preform automatic forward and backward differentiation.
+
+``matrix_of_single.odin`` contains an implementation of matrix expressions written as a combination of single variable expressions.

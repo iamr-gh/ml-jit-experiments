@@ -10,8 +10,7 @@ NodeMatrix :: struct {
 }
 
 binaryOpNodeMat :: proc(type: OpType, a: ^NodeMatrix, b: ^NodeMatrix) -> NodeMatrix {
-	// shapes must match
-	assert(a.r == b.r && a.c == b.c && len(a.data) == len(b.data))
+	assert(len(a.data) == len(b.data))
 
 	out_data: [dynamic]Node
 	resize(&out_data, len(a.data))
@@ -25,7 +24,6 @@ binaryOpNodeMat :: proc(type: OpType, a: ^NodeMatrix, b: ^NodeMatrix) -> NodeMat
 
 // any other binary operation can be computed in this format
 reduceNodeMat :: proc(type: OpType, mat: ^NodeMatrix) -> ^Node {
-	// could switch to a tree format instead
 	base := &mat.data[0]
 	for i in 1 ..< len(mat.data) {
 		new_parent := new(Node, context.temp_allocator)
@@ -56,27 +54,8 @@ getCol :: proc(mat: ^NodeMatrix, c_idx: int) -> NodeMatrix {
 	return NodeMatrix{mat.r, 1, col_data[:]}
 }
 
-// Element-wise binary operation on vectors (only requires same data length, not shape)
-// Used for dot product where row (1 x n) and column (n x 1) have different shapes
-binaryOpNodeVec :: proc(type: OpType, a: ^NodeMatrix, b: ^NodeMatrix) -> NodeMatrix {
-	// Only require same data length for vectors
-	assert(len(a.data) == len(b.data))
-
-	out_data: [dynamic]Node
-	resize(&out_data, len(a.data))
-
-	for i in 0 ..< len(a.data) {
-		out_data[i] = Op{type, &a.data[i], &b.data[i]}
-	}
-
-	// Return as a flat vector (1 x len)
-	return NodeMatrix{1, len(a.data), out_data[:]}
-}
-
-// Dot product of two vectors (as flat NodeMatrix arrays of same length)
 dotNodeMat :: proc(a: ^NodeMatrix, b: ^NodeMatrix) -> ^Node {
-	assert(len(a.data) == len(b.data))
-	prod := binaryOpNodeVec(.Mul, a, b)
+	prod := binaryOpNodeMat(.Mul, a, b)
 	return reduceNodeMat(.Add, &prod)
 }
 

@@ -490,10 +490,10 @@ test_multNodeMat_basic :: proc() {
 	// [1*7+2*9+3*11,  1*8+2*10+3*12]  = [58, 64]
 	// [4*7+5*9+6*11,  4*8+5*10+6*12]  = [139, 154]
 	assert(result.r == 2 && result.c == 2)
-	assert(eval(&result.data[0], nil) == 58)   // [0,0]
-	assert(eval(&result.data[1], nil) == 64)   // [0,1]
-	assert(eval(&result.data[2], nil) == 139)  // [1,0]
-	assert(eval(&result.data[3], nil) == 154)  // [1,1]
+	assert(eval(&result.data[0], nil) == 58) // [0,0]
+	assert(eval(&result.data[1], nil) == 64) // [0,1]
+	assert(eval(&result.data[2], nil) == 139) // [1,0]
+	assert(eval(&result.data[3], nil) == 154) // [1,1]
 
 	fmt.println("  multNodeMat (basic) passed!")
 }
@@ -560,4 +560,8 @@ test_node_matrix_all :: proc() {
 	test_multNodeMat_vector()
 
 	fmt.println("=== All NodeMatrix Tests Passed! ===\n")
+}
+
+test_grad_matrix :: proc() {
+
 }

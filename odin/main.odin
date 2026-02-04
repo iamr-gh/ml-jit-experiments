@@ -9,5 +9,6 @@ main :: proc() {
 	// eval_vm_basic_test()
 	// time_base_test()
 	// time_forward_vs_reverse()
-	test_node_matrix_all()
+	// test_node_matrix_all()
+	trainLinear()
 }
