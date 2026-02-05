@@ -142,19 +142,22 @@ eval_grad_forward_all :: proc(node: ^Node, binding: []f32) -> (f32, []f32) {
 
 
 // computes with respect to all
-eval_grad_reverse :: proc(node: ^Node, binding: []f32) -> (f32, []f32) {
-	binding_grads := [dynamic]f32{}
-	resize(&binding_grads, len(binding))
+// out_grads must be pre-allocated with length >= len(binding)
+eval_grad_reverse :: proc(node: ^Node, binding: []f32, out_grads: []f32) -> f32 {
+	for i in 0 ..< len(out_grads) {
+		out_grads[i] = 0
+	}
 
-	// could be stored more efficiently
 	activation_cache: map[^Node]f32
+	defer delete(activation_cache)
 	val := eval_grad_reverse_helper_forward(node, binding, &activation_cache)
 
 	grad_cache: map[^Node]f32
+	defer delete(grad_cache)
 	grad_cache[node] = 1
-	eval_grad_reverse_helper_backward(node, binding_grads[:], &activation_cache, &grad_cache)
+	eval_grad_reverse_helper_backward(node, out_grads, &activation_cache, &grad_cache)
 
-	return val, binding_grads[:]
+	return val
 }
 
 eval_grad_reverse_helper_forward :: proc(

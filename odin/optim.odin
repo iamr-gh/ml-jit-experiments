@@ -42,6 +42,9 @@ time_train_epoch :: proc(
 	m, squares: f64
 	n: int
 
+	grads := make([]f32, len(binding))
+	defer delete(grads)
+
 	for _ in 0 ..< runs {
 		n += 1
 		time.stopwatch_reset(&sw)
@@ -55,7 +58,7 @@ time_train_epoch :: proc(
 				binding[y_start + j] = ys[i][j]
 			}
 
-			_, grads := eval_grad_reverse(loss_node, binding)
+			eval_grad_reverse(loss_node, binding, grads)
 
 			for j in 0 ..< num_trainable {
 				binding[j] -= lr * grads[j]
@@ -79,8 +82,8 @@ time_train_epoch :: proc(
 }
 
 trainLinear :: proc() {
-	DIM_IN :: 4
-	DIM_OUT :: 3
+	DIM_IN :: 50
+	DIM_OUT :: 50
 	NUM_POINTS :: 1000
 
 	true_A: [DIM_OUT][DIM_IN]f32
@@ -115,7 +118,7 @@ trainLinear :: proc() {
 		append(&ys, y)
 	}
 
-	lr: f32 = 0.00001
+	lr: f32 = 0.0001
 	epochs := 50
 	print_every := 10
 
@@ -174,6 +177,9 @@ trainLinear :: proc() {
 		binding[j] = 0
 	}
 
+	grads := make([]f32, next_idx)
+	defer delete(grads)
+
 	for epoch in 0 ..< epochs {
 		total_loss: f32 = 0
 
@@ -185,7 +191,7 @@ trainLinear :: proc() {
 				binding[y_start + j] = ys[i][j]
 			}
 
-			loss_val, grads := eval_grad_reverse(loss_node, binding)
+			loss_val := eval_grad_reverse(loss_node, binding, grads)
 			total_loss += loss_val
 
 			for j in 0 ..< num_trainable {

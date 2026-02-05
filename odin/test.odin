@@ -155,7 +155,9 @@ basic_test :: proc() {
 	assert(dfdx.grad == 1)
 	assert(dfdy.grad == 12)
 
-	reverse_val, grads := eval_grad_reverse(ast2, bound)
+	grads := make([]f32, len(bound))
+	defer delete(grads)
+	reverse_val := eval_grad_reverse(ast2, bound, grads)
 	fmt.printf("reverse grads: {}, {}\n", grads, []f32{dfdx.grad, dfdy.grad})
 
 	assert(reverse_val == dfdx.val)
@@ -309,12 +311,15 @@ time_grad_reverse :: proc(node: ^Node, binding: []f32, runs: int) -> stats {
 
 	inner_runs := 1000
 
+	grads := make([]f32, len(binding))
+	defer delete(grads)
+
 	for _ in 0 ..< runs {
 		n += 1
 		time.stopwatch_reset(&sw)
 		time.stopwatch_start(&sw)
 		for _ in 0 ..< inner_runs {
-			eval_grad_reverse(node, binding)
+			eval_grad_reverse(node, binding, grads)
 		}
 		time.stopwatch_stop(&sw)
 		x := time.duration_milliseconds(time.stopwatch_duration(sw))

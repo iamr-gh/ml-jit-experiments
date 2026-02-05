@@ -62,6 +62,16 @@ FDiv :: struct {
 	dst:  Reg,
 }
 
+FLoad :: struct {
+	addr: ^f32,
+	dst:  Reg,
+}
+
+FStore :: struct {
+	addr: ^f32,
+	src:  Reg,
+}
+
 
 // the small amount of virtual instructions I support, which will get generated into asm
 VInstr :: union {
@@ -73,6 +83,9 @@ VInstr :: union {
 	FDiv,
 	FMov,
 	FMovI,
+	// pick an allocation and force all pointers into that allocation
+	// FLoad, need to figure out a memory system for compilation
+	// FStore,
 }
 
 
