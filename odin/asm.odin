@@ -62,13 +62,15 @@ FDiv :: struct {
 	dst:  Reg,
 }
 
+// point into some statically allocated array
+// addr can be indices, prefer this over pointers
 FLoad :: struct {
-	addr: ^f32,
+	addr: int,
 	dst:  Reg,
 }
 
 FStore :: struct {
-	addr: ^f32,
+	addr: int,
 	src:  Reg,
 }
 
@@ -83,6 +85,8 @@ VInstr :: union {
 	FDiv,
 	FMov,
 	FMovI,
+	FLoad,
+	FStore,
 	// pick an allocation and force all pointers into that allocation
 	// FLoad, need to figure out a memory system for compilation
 	// FStore,
@@ -90,7 +94,7 @@ VInstr :: union {
 
 
 // small virtual machine before I get real jit working
-simulate :: proc(instrs: []VInstr) -> f32 {
+simulate :: proc(instrs: []VInstr, mem: []f32) -> f32 {
 	state: [Reg]f32
 
 	// explicit PC is much slower this
@@ -112,6 +116,10 @@ simulate :: proc(instrs: []VInstr) -> f32 {
 			state[i.dst] = state[i.src]
 		case FMovI:
 			state[i.dst] = i.imm
+		case FLoad:
+			state[i.dst] = mem[i.addr]
+		case FStore:
+			mem[i.addr] = state[i.src]
 		}
 	}
 
