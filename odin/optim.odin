@@ -45,6 +45,11 @@ time_train_epoch :: proc(
 	grads := make([]f32, len(binding))
 	defer delete(grads)
 
+	activation_cache: map[^Node]f32
+	grad_cache: map[^Node]f32
+	defer delete(activation_cache)
+	defer delete(grad_cache)
+
 	for _ in 0 ..< runs {
 		n += 1
 		time.stopwatch_reset(&sw)
@@ -58,7 +63,7 @@ time_train_epoch :: proc(
 				binding[y_start + j] = ys[i][j]
 			}
 
-			eval_grad_reverse(loss_node, binding, grads)
+			eval_grad_reverse(loss_node, binding, grads, &activation_cache, &grad_cache)
 
 			for j in 0 ..< num_trainable {
 				binding[j] -= lr * grads[j]
@@ -180,6 +185,11 @@ trainLinear :: proc() {
 	grads := make([]f32, next_idx)
 	defer delete(grads)
 
+	activation_cache: map[^Node]f32
+	grad_cache: map[^Node]f32
+	defer delete(activation_cache)
+	defer delete(grad_cache)
+
 	for epoch in 0 ..< epochs {
 		total_loss: f32 = 0
 
@@ -191,7 +201,7 @@ trainLinear :: proc() {
 				binding[y_start + j] = ys[i][j]
 			}
 
-			loss_val := eval_grad_reverse(loss_node, binding, grads)
+			loss_val := eval_grad_reverse(loss_node, binding, grads, &activation_cache, &grad_cache)
 			total_loss += loss_val
 
 			for j in 0 ..< num_trainable {

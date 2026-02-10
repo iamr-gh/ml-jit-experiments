@@ -143,19 +143,38 @@ eval_grad_forward_all :: proc(node: ^Node, binding: []f32) -> (f32, []f32) {
 
 // computes with respect to all
 // out_grads must be pre-allocated with length >= len(binding)
-eval_grad_reverse :: proc(node: ^Node, binding: []f32, out_grads: []f32) -> f32 {
+// activation_cache and grad_cache can be provided to avoid repeated allocations in tight loops
+eval_grad_reverse :: proc(
+	node: ^Node,
+	binding: []f32,
+	out_grads: []f32,
+	activation_cache: ^map[^Node]f32 = nil,
+	grad_cache: ^map[^Node]f32 = nil,
+) -> f32 {
 	for i in 0 ..< len(out_grads) {
 		out_grads[i] = 0
 	}
 
-	activation_cache: map[^Node]f32
-	defer delete(activation_cache)
-	val := eval_grad_reverse_helper_forward(node, binding, &activation_cache)
+	local_activation_cache: map[^Node]f32
+	local_grad_cache: map[^Node]f32
 
-	grad_cache: map[^Node]f32
-	defer delete(grad_cache)
-	grad_cache[node] = 1
-	eval_grad_reverse_helper_backward(node, out_grads, &activation_cache, &grad_cache)
+	act_cache := activation_cache if activation_cache != nil else &local_activation_cache
+	grd_cache := grad_cache if grad_cache != nil else &local_grad_cache
+
+	clear(act_cache)
+	clear(grd_cache)
+
+	val := eval_grad_reverse_helper_forward(node, binding, act_cache)
+
+	grd_cache[node] = 1
+	eval_grad_reverse_helper_backward(node, out_grads, act_cache, grd_cache)
+
+	if activation_cache == nil {
+		delete(local_activation_cache)
+	}
+	if grad_cache == nil {
+		delete(local_grad_cache)
+	}
 
 	return val
 }
