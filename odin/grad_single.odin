@@ -214,9 +214,12 @@ eval_grad_reverse_helper_backward :: proc(
 		binding_grads[n] += grad_cache[node]
 	case Op:
 		switch n.type {
-		case .Add, .Sub:
+		case .Add:
 			grad_cache[n.l] = grad_cache[node]
 			grad_cache[n.r] = grad_cache[node]
+		case .Sub:
+			grad_cache[n.l] = grad_cache[node]
+			grad_cache[n.r] = -grad_cache[node]
 		case .Mul:
 			grad_cache[n.l] = grad_cache[node] * activation_cache[n.r]
 			grad_cache[n.r] = grad_cache[node] * activation_cache[n.l]

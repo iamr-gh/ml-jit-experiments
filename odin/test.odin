@@ -567,6 +567,437 @@ test_node_matrix_all :: proc() {
 	fmt.println("=== All NodeMatrix Tests Passed! ===\n")
 }
 
-test_grad_matrix :: proc() {
+assert_mat_approx_equal :: proc(a, b: []f32, tol: f32 = 1e-5) {
+	assert(len(a) == len(b), "length mismatch")
+	for i in 0 ..< len(a) {
+		diff := a[i] - b[i]
+		if diff < 0 {diff = -diff}
+		assert(diff < tol, "value mismatch")
+	}
+}
 
+test_grad_matrix_elementwise :: proc() {
+	fmt.println("Testing MatNode elementwise ops vs NodeMatrix...")
+
+	a_data := []f32{1, 2, 3, 4}
+	b_data := []f32{5, 6, 7, 8}
+
+	var_shapes := []MatShape{{2, 2}, {2, 2}}
+	binding := make([]f32, 8)
+	defer delete(binding)
+	for i in 0 ..< 4 {
+		binding[i] = a_data[i]
+		binding[4 + i] = b_data[i]
+	}
+
+	a_mat := make_mat_var(0)
+	b_mat := make_mat_var(1)
+
+	a_node_mat := makeConstNodeMatrix(2, 2, a_data)
+	b_node_mat := makeConstNodeMatrix(2, 2, b_data)
+
+	ops := []MatOpType{.Add, .Sub, .Mul, .Div}
+	scalar_ops := []OpType{.Add, .Sub, .Mul, .Div}
+
+	for op_idx in 0 ..< len(ops) {
+		mat_node_result := make_mat_op(ops[op_idx], a_mat, b_mat)
+		val, shape := eval_mat(mat_node_result, binding, var_shapes)
+		defer delete(val)
+
+		node_mat_result := binaryOpNodeMat(scalar_ops[op_idx], &a_node_mat, &b_node_mat)
+		expected := make([]f32, 4)
+		defer delete(expected)
+		for i in 0 ..< 4 {
+			expected[i] = eval(&node_mat_result.data[i], nil)
+		}
+
+		assert_mat_approx_equal(val, expected)
+	}
+
+	fmt.println("  MatNode elementwise ops passed!")
+}
+
+test_grad_matrix_matmul :: proc() {
+	fmt.println("Testing MatNode matmul vs NodeMatrix...")
+
+	a_data := []f32{1, 2, 3, 4, 5, 6}
+	b_data := []f32{7, 8, 9, 10, 11, 12}
+
+	var_shapes := []MatShape{{2, 3}, {3, 2}}
+	binding := make([]f32, 12)
+	defer delete(binding)
+	for i in 0 ..< 6 {
+		binding[i] = a_data[i]
+		binding[6 + i] = b_data[i]
+	}
+
+	a_mat := make_mat_var(0)
+	b_mat := make_mat_var(1)
+	mat_node_result := make_mat_op(.MatMul, a_mat, b_mat)
+
+	val, shape := eval_mat(mat_node_result, binding, var_shapes)
+	defer delete(val)
+
+	a_node_mat := makeConstNodeMatrix(2, 3, a_data)
+	b_node_mat := makeConstNodeMatrix(3, 2, b_data)
+	node_mat_result := multNodeMat(&a_node_mat, &b_node_mat)
+
+	expected := make([]f32, 4)
+	defer delete(expected)
+	for i in 0 ..< 4 {
+		expected[i] = eval(&node_mat_result.data[i], nil)
+	}
+
+	assert(shape.r == 2 && shape.c == 2)
+	assert_mat_approx_equal(val, expected)
+
+	fmt.println("  MatNode matmul passed!")
+}
+
+test_grad_matrix_reduce_sum :: proc() {
+	fmt.println("Testing MatNode reduce_sum vs NodeMatrix...")
+
+	a_data := []f32{1, 2, 3, 4, 5, 6}
+	var_shapes := []MatShape{{2, 3}}
+	binding := make([]f32, 6)
+	defer delete(binding)
+	for i in 0 ..< 6 {
+		binding[i] = a_data[i]
+	}
+
+	a_mat := make_mat_var(0)
+	reduce_node := make_mat_op(.ReduceSum, a_mat)
+
+	val, shape := eval_mat(reduce_node, binding, var_shapes)
+	defer delete(val)
+
+	a_node_mat := makeConstNodeMatrix(2, 3, a_data)
+	scalar_result := reduceNodeMat(.Add, &a_node_mat)
+	expected := eval(scalar_result, nil)
+
+	assert(shape.r == 1 && shape.c == 1)
+	assert(len(val) == 1)
+	diff := val[0] - expected
+	if diff < 0 {diff = -diff}
+	assert(diff < 1e-5)
+
+	fmt.println("  MatNode reduce_sum passed!")
+}
+
+test_grad_matrix_forward_grad :: proc() {
+	fmt.println("Testing MatNode forward grad vs NodeMatrix...")
+
+	a_data := []f32{1, 2, 3, 4}
+	b_data := []f32{5, 6, 7, 8}
+
+	var_shapes := []MatShape{{2, 2}, {2, 2}}
+	binding := make([]f32, 8)
+	defer delete(binding)
+	for i in 0 ..< 4 {
+		binding[i] = a_data[i]
+		binding[4 + i] = b_data[i]
+	}
+
+	a_mat := make_mat_var(0)
+	b_mat := make_mat_var(1)
+	mul_node := make_mat_op(.Mul, a_mat, b_mat)
+	sum_node := make_mat_op(.ReduceSum, mul_node)
+
+	vg := eval_mat_grad_forward(sum_node, binding, var_shapes, 0)
+	defer delete(vg.val)
+	defer delete(vg.grad)
+
+	a_node_mat: NodeMatrix
+	a_node_mat.r = 2
+	a_node_mat.c = 2
+	a_node_data := make([]Node, 4)
+	for i in 0 ..< 4 {
+		a_node_data[i] = i
+	}
+	a_node_mat.data = a_node_data
+
+	b_node_mat: NodeMatrix
+	b_node_mat.r = 2
+	b_node_mat.c = 2
+	b_node_data := make([]Node, 4)
+	for i in 0 ..< 4 {
+		b_node_data[i] = 4 + i
+	}
+	b_node_mat.data = b_node_data
+
+	mul_result := binaryOpNodeMat(.Mul, &a_node_mat, &b_node_mat)
+	scalar_sum := reduceNodeMat(.Add, &mul_result)
+
+	scalar_grads := make([]f32, 8)
+	defer delete(scalar_grads)
+	scalar_val := eval_grad_reverse(scalar_sum, binding, scalar_grads)
+
+	diff := vg.val[0] - scalar_val
+	if diff < 0 {diff = -diff}
+	assert(diff < 1e-5)
+
+	expected_forward_grad: f32 = 0
+	for i in 0 ..< 4 {
+		expected_forward_grad += scalar_grads[i]
+	}
+
+	grad_diff := vg.grad[0] - expected_forward_grad
+	if grad_diff < 0 {grad_diff = -grad_diff}
+	assert(grad_diff < 1e-5)
+
+	fmt.println("  MatNode forward grad passed!")
+}
+
+test_grad_matrix_reverse_grad :: proc() {
+	fmt.println("Testing MatNode reverse grad vs NodeMatrix...")
+
+	a_data := []f32{1, 2, 3, 4}
+	b_data := []f32{5, 6, 7, 8}
+
+	var_shapes := []MatShape{{2, 2}, {2, 2}}
+	binding := make([]f32, 8)
+	defer delete(binding)
+	for i in 0 ..< 4 {
+		binding[i] = a_data[i]
+		binding[4 + i] = b_data[i]
+	}
+
+	a_mat := make_mat_var(0)
+	b_mat := make_mat_var(1)
+	mul_node := make_mat_op(.Mul, a_mat, b_mat)
+	sum_node := make_mat_op(.ReduceSum, mul_node)
+
+	mat_grads := make([]f32, 8)
+	defer delete(mat_grads)
+	mat_val := eval_mat_grad_reverse(sum_node, binding, var_shapes, mat_grads)
+	defer delete(mat_val)
+
+	a_node_mat: NodeMatrix
+	a_node_mat.r = 2
+	a_node_mat.c = 2
+	a_node_data := make([]Node, 4)
+	for i in 0 ..< 4 {
+		a_node_data[i] = i
+	}
+	a_node_mat.data = a_node_data
+
+	b_node_mat: NodeMatrix
+	b_node_mat.r = 2
+	b_node_mat.c = 2
+	b_node_data := make([]Node, 4)
+	for i in 0 ..< 4 {
+		b_node_data[i] = 4 + i
+	}
+	b_node_mat.data = b_node_data
+
+	mul_result := binaryOpNodeMat(.Mul, &a_node_mat, &b_node_mat)
+	scalar_sum := reduceNodeMat(.Add, &mul_result)
+
+	scalar_grads := make([]f32, 8)
+	defer delete(scalar_grads)
+	scalar_val := eval_grad_reverse(scalar_sum, binding, scalar_grads)
+
+	diff := mat_val[0] - scalar_val
+	if diff < 0 {diff = -diff}
+	assert(diff < 1e-5)
+
+	assert_mat_approx_equal(mat_grads, scalar_grads)
+
+	fmt.println("  MatNode reverse grad passed!")
+}
+
+test_grad_matrix_matmul_grad :: proc() {
+	fmt.println("Testing MatNode matmul gradients vs NodeMatrix...")
+
+	A_data := []f32{1, 2, 3, 4, 5, 6}
+	x_data := []f32{1, 2, 3}
+
+	var_shapes := []MatShape{
+		{2, 3},
+		{3, 1},
+	}
+
+	total_size := 6 + 3
+	binding := make([]f32, total_size)
+	defer delete(binding)
+
+	for i in 0 ..< 6 {
+		binding[i] = A_data[i]
+	}
+	for i in 0 ..< 3 {
+		binding[6 + i] = x_data[i]
+	}
+
+	A_mat := make_mat_var(0)
+	x_mat := make_mat_var(1)
+
+	Ax := make_mat_op(.MatMul, A_mat, x_mat)
+	loss := make_mat_op(.ReduceSum, Ax)
+
+	mat_grads := make([]f32, total_size)
+	defer delete(mat_grads)
+	mat_val := eval_mat_grad_reverse(loss, binding, var_shapes, mat_grads)
+	defer delete(mat_val)
+
+	A_node, next_idx := makeVarMat(2, 3, 0)
+	x_node: NodeMatrix
+	x_node, next_idx = makeVarMat(3, 1, next_idx)
+
+	Ax_scalar := multNodeMat(&A_node, &x_node)
+	loss_scalar := reduceNodeMat(.Add, &Ax_scalar)
+
+	scalar_grads := make([]f32, total_size)
+	defer delete(scalar_grads)
+	scalar_val := eval_grad_reverse(loss_scalar, binding, scalar_grads)
+
+	val_diff := mat_val[0] - scalar_val
+	if val_diff < 0 {val_diff = -val_diff}
+	assert(val_diff < 1e-4)
+
+	assert_mat_approx_equal(mat_grads, scalar_grads, 1e-4)
+
+	fmt.println("  MatNode matmul gradients passed!")
+}
+
+test_grad_matrix_squared :: proc() {
+	fmt.println("Testing MatNode x*x gradients vs NodeMatrix...")
+
+	a_data := []f32{2, 3, 4, 5}
+
+	var_shapes := []MatShape{{2, 2}}
+	binding := make([]f32, 4)
+	defer delete(binding)
+	for i in 0 ..< 4 {
+		binding[i] = a_data[i]
+	}
+
+	a_mat := make_mat_var(0)
+	sq := make_mat_op(.Mul, a_mat, a_mat)
+	loss := make_mat_op(.ReduceSum, sq)
+
+	mat_grads := make([]f32, 4)
+	defer delete(mat_grads)
+	mat_val := eval_mat_grad_reverse(loss, binding, var_shapes, mat_grads)
+	defer delete(mat_val)
+
+	a_node_mat: NodeMatrix
+	a_node_mat.r = 2
+	a_node_mat.c = 2
+	a_node_data := make([]Node, 4)
+	for i in 0 ..< 4 {
+		a_node_data[i] = i
+	}
+	a_node_mat.data = a_node_data
+
+	sq_scalar := binaryOpNodeMat(.Mul, &a_node_mat, &a_node_mat)
+	loss_scalar := reduceNodeMat(.Add, &sq_scalar)
+
+	scalar_grads := make([]f32, 4)
+	defer delete(scalar_grads)
+	scalar_val := eval_grad_reverse(loss_scalar, binding, scalar_grads)
+
+	val_diff := mat_val[0] - scalar_val
+	if val_diff < 0 {val_diff = -val_diff}
+	assert(val_diff < 1e-4)
+
+	assert_mat_approx_equal(mat_grads, scalar_grads, 1e-4)
+
+	fmt.println("  MatNode x*x gradients passed!")
+}
+
+test_grad_matrix_linear_model :: proc() {
+	fmt.println("Testing MatNode linear model (Ax+b) vs NodeMatrix...")
+
+	DIM_IN :: 3
+	DIM_OUT :: 2
+
+	A_data := []f32{1, 2, 3, 4, 5, 6}
+	b_data := []f32{0.5, -0.5}
+	x_data := []f32{1, 2, 3}
+	y_data := []f32{10, 20}
+
+	var_shapes := []MatShape{
+		{DIM_OUT, DIM_IN},
+		{DIM_OUT, 1},
+		{DIM_IN, 1},
+		{DIM_OUT, 1},
+	}
+
+	total_size := DIM_OUT * DIM_IN + DIM_OUT + DIM_IN + DIM_OUT
+	binding := make([]f32, total_size)
+	defer delete(binding)
+
+	offset := 0
+	for i in 0 ..< DIM_OUT * DIM_IN {
+		binding[offset + i] = A_data[i]
+	}
+	offset += DIM_OUT * DIM_IN
+	for i in 0 ..< DIM_OUT {
+		binding[offset + i] = b_data[i]
+	}
+	offset += DIM_OUT
+	for i in 0 ..< DIM_IN {
+		binding[offset + i] = x_data[i]
+	}
+	offset += DIM_IN
+	for i in 0 ..< DIM_OUT {
+		binding[offset + i] = y_data[i]
+	}
+
+	A_mat := make_mat_var(0)
+	b_mat := make_mat_var(1)
+	x_mat := make_mat_var(2)
+	y_mat := make_mat_var(3)
+
+	Ax := make_mat_op(.MatMul, A_mat, x_mat)
+	pred := make_mat_op(.Add, Ax, b_mat)
+	diff := make_mat_op(.Sub, pred, y_mat)
+	sq := make_mat_op(.Mul, diff, diff)
+	loss := make_mat_op(.ReduceSum, sq)
+
+	mat_grads := make([]f32, total_size)
+	defer delete(mat_grads)
+	mat_val := eval_mat_grad_reverse(loss, binding, var_shapes, mat_grads)
+	defer delete(mat_val)
+
+	A_node, next_idx := makeVarMat(DIM_OUT, DIM_IN, 0)
+	b_node: NodeMatrix
+	x_node: NodeMatrix
+	y_node: NodeMatrix
+	b_node, next_idx = makeVarMat(DIM_OUT, 1, next_idx)
+	x_node, next_idx = makeVarMat(DIM_IN, 1, next_idx)
+	y_node, next_idx = makeVarMat(DIM_OUT, 1, next_idx)
+
+	Ax_scalar := multNodeMat(&A_node, &x_node)
+	pred_scalar := binaryOpNodeMat(.Add, &Ax_scalar, &b_node)
+	diff_scalar := binaryOpNodeMat(.Sub, &pred_scalar, &y_node)
+	sq_scalar := binaryOpNodeMat(.Mul, &diff_scalar, &diff_scalar)
+	loss_scalar := reduceNodeMat(.Add, &sq_scalar)
+
+	scalar_grads := make([]f32, total_size)
+	defer delete(scalar_grads)
+	scalar_val := eval_grad_reverse(loss_scalar, binding, scalar_grads)
+
+	val_diff := mat_val[0] - scalar_val
+	if val_diff < 0 {val_diff = -val_diff}
+	assert(val_diff < 1e-4)
+
+	assert_mat_approx_equal(mat_grads, scalar_grads, 1e-4)
+
+	fmt.println("  MatNode linear model passed!")
+}
+
+test_grad_matrix :: proc() {
+	fmt.println("\n=== Running MatNode vs NodeMatrix Comparison Tests ===")
+
+	test_grad_matrix_elementwise()
+	test_grad_matrix_matmul()
+	test_grad_matrix_reduce_sum()
+	test_grad_matrix_forward_grad()
+	test_grad_matrix_reverse_grad()
+	test_grad_matrix_matmul_grad()
+	test_grad_matrix_squared()
+	test_grad_matrix_linear_model()
+
+	fmt.println("=== All MatNode Tests Passed! ===\n")
 }
