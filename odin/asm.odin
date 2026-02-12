@@ -94,7 +94,7 @@ VInstr :: union {
 
 
 // small virtual machine before I get real jit working
-simulate :: proc(instrs: []VInstr, mem: []f32) -> f32 {
+simulate :: proc(instrs: []VInstr, mem: []f32 = nil) -> f32 {
 	state: [Reg]f32
 
 	// explicit PC is much slower this

@@ -86,6 +86,61 @@ time_train_epoch :: proc(
 	return TrainStats{m, variance, math.sqrt(variance) / m}
 }
 
+time_train_epoch_compiled :: proc(
+	compiled: CompiledReverse,
+	mem: []f32,
+	xs: [][]f32,
+	ys: [][]f32,
+	x_start: int,
+	y_start: int,
+	num_trainable: int,
+	lr: f32,
+	runs: int,
+) -> TrainStats {
+	sw: time.Stopwatch
+	m, squares: f64
+	n: int
+
+	for _ in 0 ..< runs {
+		n += 1
+		time.stopwatch_reset(&sw)
+		time.stopwatch_start(&sw)
+
+		for i in 0 ..< len(xs) {
+			for j in 0 ..< len(xs[i]) {
+				mem[x_start + j] = xs[i][j]
+			}
+			for j in 0 ..< len(ys[i]) {
+				mem[y_start + j] = ys[i][j]
+			}
+
+			for j in 0 ..< compiled.total_mem_size - compiled.grad_offset {
+				mem[compiled.grad_offset + j] = 0
+			}
+
+			simulate(compiled.instrs[:], mem)
+
+			for j in 0 ..< num_trainable {
+				mem[j] -= lr * mem[compiled.grad_offset + j]
+			}
+		}
+
+		time.stopwatch_stop(&sw)
+		x := time.duration_milliseconds(time.stopwatch_duration(sw))
+
+		if n == 1 {
+			m = x
+		} else {
+			m_new := m + ((x - m) / f64(n))
+			squares = squares + ((x - m) * (x - m_new))
+			m = m_new
+		}
+	}
+
+	variance := squares / f64(n)
+	return TrainStats{m, variance, math.sqrt(variance) / m}
+}
+
 trainLinear :: proc() {
 	DIM_IN :: 50
 	DIM_OUT :: 50
@@ -171,12 +226,45 @@ trainLinear :: proc() {
 	)
 
 	fmt.printf(
-		"Timing (%d epochs): mean=%.3fms, var=%.6f, cv=%.4f\n",
+		"Interpreted (%d epochs): mean=%.3fms, var=%.6f, cv=%.4f\n",
 		timing_runs,
 		train_stats.mean_ms,
 		train_stats.var_ms,
 		train_stats.cv,
 	)
+
+	compiled := compile_reverse(loss_node, next_idx)
+	compiled_mem := make([]f32, compiled.total_mem_size)
+	defer delete(compiled_mem)
+
+	fmt.printf(
+		"Compiled: %d instructions, %d mem slots\n",
+		len(compiled.instrs),
+		compiled.total_mem_size,
+	)
+
+	compiled_stats := time_train_epoch_compiled(
+		compiled,
+		compiled_mem,
+		xs[:],
+		ys[:],
+		x_start,
+		y_start,
+		num_trainable,
+		lr,
+		timing_runs,
+	)
+
+	fmt.printf(
+		"Compiled (%d epochs): mean=%.3fms, var=%.6f, cv=%.4f\n",
+		timing_runs,
+		compiled_stats.mean_ms,
+		compiled_stats.var_ms,
+		compiled_stats.cv,
+	)
+
+	speedup := train_stats.mean_ms / compiled_stats.mean_ms
+	fmt.printf("Speedup: %.2fx\n", speedup)
 
 	for j in 0 ..< next_idx {
 		binding[j] = 0
