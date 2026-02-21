@@ -8,4 +8,5 @@ main :: proc() {
 	test_grad_matrix()
 	time_grad_matrix_vs_scalar(20, 20, 200, 10)
 	time_grad_matrix_vs_scalar(50, 50, 500, 10)
+	time_diff_vm_vs_compiled_reverse()
 }

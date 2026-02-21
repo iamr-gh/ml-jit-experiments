@@ -26,7 +26,19 @@ DAdd :: struct {
 	dst:  Reg,
 }
 
+DSub :: struct {
+	src1: Reg,
+	src2: Reg,
+	dst:  Reg,
+}
+
 DMul :: struct {
+	src1: Reg,
+	src2: Reg,
+	dst:  Reg,
+}
+
+DDiv :: struct {
 	src1: Reg,
 	src2: Reg,
 	dst:  Reg,
@@ -38,7 +50,9 @@ DiffInstr :: union {
 	DLoad,
 	DStore,
 	DAdd,
+	DSub,
 	DMul,
+	DDiv,
 }
 
 TapeEntry :: struct {
@@ -78,12 +92,23 @@ diff_sim_forward :: proc(instrs: []DiffInstr, mem: []f32) -> (f32, []TapeEntry) 
 				instr = inst,
 			}
 			state[instr.dst] = state[instr.src1] + state[instr.src2]
+		case DSub:
+			tape[i] = TapeEntry {
+				instr = inst,
+			}
+			state[instr.dst] = state[instr.src1] - state[instr.src2]
 		case DMul:
 			tape[i] = TapeEntry {
 				instr        = inst,
 				operand_vals = {state[instr.src1], state[instr.src2]},
 			}
 			state[instr.dst] = state[instr.src1] * state[instr.src2]
+		case DDiv:
+			tape[i] = TapeEntry {
+				instr        = inst,
+				operand_vals = {state[instr.src1], state[instr.src2]},
+			}
+			state[instr.dst] = state[instr.src1] / state[instr.src2]
 		}
 	}
 
@@ -100,21 +125,35 @@ diff_sim_backward :: proc(tape: []TapeEntry, out_grads: []f32, seed: f32 = 1.0) 
 		case DMovI:
 			reg_grads[instr.dst] = 0
 		case DMov:
-			reg_grads[instr.src] += reg_grads[instr.dst]
+			g := reg_grads[instr.dst]
 			reg_grads[instr.dst] = 0
+			reg_grads[instr.src] += g
 		case DLoad:
 			out_grads[instr.addr] += reg_grads[instr.dst]
 			reg_grads[instr.dst] = 0
 		case DStore:
 			reg_grads[instr.src] += out_grads[instr.addr]
 		case DAdd:
-			reg_grads[instr.src1] += reg_grads[instr.dst]
-			reg_grads[instr.src2] += reg_grads[instr.dst]
+			g := reg_grads[instr.dst]
 			reg_grads[instr.dst] = 0
+			reg_grads[instr.src1] += g
+			reg_grads[instr.src2] += g
+		case DSub:
+			g := reg_grads[instr.dst]
+			reg_grads[instr.dst] = 0
+			reg_grads[instr.src1] += g
+			reg_grads[instr.src2] -= g
 		case DMul:
-			reg_grads[instr.src1] += reg_grads[instr.dst] * entry.operand_vals[1]
-			reg_grads[instr.src2] += reg_grads[instr.dst] * entry.operand_vals[0]
+			g := reg_grads[instr.dst]
 			reg_grads[instr.dst] = 0
+			reg_grads[instr.src1] += g * entry.operand_vals[1]
+			reg_grads[instr.src2] += g * entry.operand_vals[0]
+		case DDiv:
+			// d/da (a/b) = 1/b,  d/db (a/b) = -a/b²
+			g := reg_grads[instr.dst]
+			reg_grads[instr.dst] = 0
+			reg_grads[instr.src1] += g / entry.operand_vals[1]
+			reg_grads[instr.src2] -= g * entry.operand_vals[0] / (entry.operand_vals[1] * entry.operand_vals[1])
 		}
 	}
 }

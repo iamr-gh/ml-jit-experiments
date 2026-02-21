@@ -143,6 +143,35 @@ compile_reverse :: proc(tree: ^Node, num_bindings: int) -> CompiledReverse {
 	}
 }
 
+compile_diff_vm :: proc(tree: ^Node) -> [dynamic]DiffInstr {
+	out := [dynamic]DiffInstr{}
+	compile_diff_vm_helper(tree, &out)
+	return out
+}
+
+compile_diff_vm_helper :: proc(tree: ^Node, out: ^[dynamic]DiffInstr) {
+	switch n in tree {
+	case Op:
+		compile_diff_vm_helper(n.r, out)
+		append(out, DMov{src = .Ret, dst = .R1})
+		compile_diff_vm_helper(n.l, out)
+		switch n.type {
+		case .Add:
+			append(out, DAdd{src1 = .Ret, src2 = .R1, dst = .Ret})
+		case .Sub:
+			append(out, DSub{src1 = .Ret, src2 = .R1, dst = .Ret})
+		case .Mul:
+			append(out, DMul{src1 = .Ret, src2 = .R1, dst = .Ret})
+		case .Div:
+			append(out, DDiv{src1 = .Ret, src2 = .R1, dst = .Ret})
+		}
+	case f32:
+		append(out, DMovI{dst = .Ret, imm = n})
+	case int:
+		append(out, DLoad{addr = n, dst = .Ret})
+	}
+}
+
 compile_forward :: proc(tree: ^Node) -> [dynamic]VInstr {
 	out := [dynamic]VInstr{}
 	compile_forward_helper(tree, &out)

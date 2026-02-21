@@ -988,6 +988,90 @@ test_grad_matrix_linear_model :: proc() {
 	fmt.println("  MatNode linear model passed!")
 }
 
+// Checks that grad_matrix and matrix_of_single produce identical gradients on a
+// small fixed Ax+b MSE problem where exact values can be hand-verified.
+//
+// A (2x3):  [[1,2,3],[4,5,6]]
+// b (2x1):  [0.5, -0.5]
+// x (3x1):  [1, 2, 3]
+// y (2x1):  [10, 20]
+//
+// pred = Ax+b = [1+4+9+0.5, 4+10+18-0.5] = [14.5, 31.5]
+// diff = pred-y = [4.5, 11.5]
+// loss = sum(diff^2) = 4.5^2 + 11.5^2 = 20.25 + 132.25 = 152.5
+//
+// d(loss)/d(diff_i) = 2*diff_i  =>  [9, 23]
+// d(loss)/d(b_i)    = 2*diff_i  =>  [9, 23]
+// d(loss)/d(x_j)    = sum_i 2*diff_i * A_ij
+//   j=0: 2*4.5*1 + 2*11.5*4 = 9 + 92 = 101
+//   j=1: 2*4.5*2 + 2*11.5*5 = 18 + 115 = 133
+//   j=2: 2*4.5*3 + 2*11.5*6 = 27 + 138 = 165
+// d(loss)/d(A_ij) = 2*diff_i * x_j
+//   row0: [9*1, 9*2, 9*3]     = [9,  18, 27]
+//   row1: [23*1, 23*2, 23*3]  = [23, 46, 69]
+test_grad_matrix_vs_scalar_gradients :: proc() {
+	fmt.println("Testing grad_matrix vs matrix_of_single gradients (fixed 2x3 Ax+b)...")
+
+	A_data := []f32{1, 2, 3, 4, 5, 6}
+	b_data := []f32{0.5, -0.5}
+	x_data := []f32{1, 2, 3}
+	y_data := []f32{10, 20}
+
+	// layout: [A(6), b(2), x(3), y(2)]  total=13
+	binding := []f32{1, 2, 3, 4, 5, 6,  0.5, -0.5,  1, 2, 3,  10, 20}
+
+	expected_loss: f32 = 152.5
+	expected_grads := []f32{
+		9, 18, 27, 23, 46, 69,  // dA
+		9, 23,                  // db
+		101, 133, 165,          // dx
+		0, 0,                   // dy (not checked — target is fixed)
+	}
+
+	var_shapes := []MatShape{{2, 3}, {2, 1}, {3, 1}, {2, 1}}
+	tol: f32 = 1e-4
+
+	// --- grad_matrix ---
+	A_mat  := make_mat_var(0); b_mat := make_mat_var(1)
+	x_mat  := make_mat_var(2); y_mat := make_mat_var(3)
+	diff_m := make_mat_op(.Sub, make_mat_op(.Add, make_mat_op(.MatMul, A_mat, x_mat), b_mat), y_mat)
+	loss_m := make_mat_op(.ReduceSum, make_mat_op(.Mul, diff_m, diff_m))
+
+	mat_grads := make([]f32, len(binding)); defer delete(mat_grads)
+	mat_val   := eval_mat_grad_reverse(loss_m, binding, var_shapes, mat_grads)
+	defer delete(mat_val)
+
+	loss_diff := mat_val[0] - expected_loss
+	if loss_diff < 0 { loss_diff = -loss_diff }
+	assert(loss_diff < tol, "grad_matrix: loss mismatch")
+	assert_mat_approx_equal(mat_grads[:11], expected_grads[:11], tol)
+
+	// --- matrix_of_single ---
+	A_node, next := makeVarMat(2, 3, 0)
+	b_node: NodeMatrix; b_node, next = makeVarMat(2, 1, next)
+	x_node: NodeMatrix; x_node, next = makeVarMat(3, 1, next)
+	y_node: NodeMatrix; y_node, next = makeVarMat(2, 1, next)
+
+	Ax     := multNodeMat(&A_node, &x_node)
+	pred   := binaryOpNodeMat(.Add, &Ax, &b_node)
+	diff   := binaryOpNodeMat(.Sub, &pred, &y_node)
+	sq     := binaryOpNodeMat(.Mul, &diff, &diff)
+	loss_s := reduceNodeMat(.Add, &sq)
+
+	scalar_grads := make([]f32, len(binding)); defer delete(scalar_grads)
+	scalar_loss  := eval_grad_reverse(loss_s, binding, scalar_grads)
+
+	loss_diff = scalar_loss - expected_loss
+	if loss_diff < 0 { loss_diff = -loss_diff }
+	assert(loss_diff < tol, "matrix_of_single: loss mismatch")
+	assert_mat_approx_equal(scalar_grads[:11], expected_grads[:11], tol)
+
+	// --- the two approaches must agree with each other ---
+	assert_mat_approx_equal(mat_grads, scalar_grads, tol)
+
+	fmt.println("  grad_matrix vs matrix_of_single gradients passed!")
+}
+
 test_grad_matrix :: proc() {
 	fmt.println("\n=== Running MatNode vs NodeMatrix Comparison Tests ===")
 
@@ -999,6 +1083,7 @@ test_grad_matrix :: proc() {
 	test_grad_matrix_matmul_grad()
 	test_grad_matrix_squared()
 	test_grad_matrix_linear_model()
+	test_grad_matrix_vs_scalar_gradients()
 
 	fmt.println("=== All MatNode Tests Passed! ===\n")
 }
@@ -1075,6 +1160,24 @@ time_grad_matrix_vs_scalar :: proc(dim_in, dim_out, num_points, runs: int) {
 	binding_m := make([]f32, total_size)
 	defer delete(binding_m)
 
+	// --- verify outputs match on first data point ---
+	for j in 0 ..< dim_in  { binding_s[x_start + j]   = xs[0][j]; binding_m[x_start + j]   = xs[0][j] }
+	for j in 0 ..< dim_out { binding_s[y_start + j]   = ys[0][j]; binding_m[y_start + j]   = ys[0][j] }
+
+	scalar_grads := make([]f32, total_size); defer delete(scalar_grads)
+	mat_grads    := make([]f32, total_size); defer delete(mat_grads)
+
+	scalar_loss := eval_grad_reverse(loss_s, binding_s, scalar_grads)
+	mat_loss_v  := eval_mat_grad_reverse(loss_m, binding_m, var_shapes, mat_grads)
+	defer delete(mat_loss_v)
+
+	tol: f32 = 1e-4
+	loss_diff := scalar_loss - mat_loss_v[0]
+	if loss_diff < 0 { loss_diff = -loss_diff }
+	assert(loss_diff < tol, "loss value mismatch between scalar and mat approaches")
+	assert_mat_approx_equal(scalar_grads, mat_grads, tol)
+	fmt.printf("  [verify] outputs match (tol=%.0e)\n", tol)
+
 	mat_stats := time_train_epoch_mat(loss_m, binding_m, var_shapes, xs[:], ys[:], 2, 3, num_trainable, 0, runs)
 
 	fmt.printf(
@@ -1084,4 +1187,123 @@ time_grad_matrix_vs_scalar :: proc(dim_in, dim_out, num_points, runs: int) {
 	fmt.printf("  matrix_of_single: mean=%.3fms  cv=%.4f\n", scalar_stats.mean_ms, scalar_stats.cv)
 	fmt.printf("  grad_matrix:      mean=%.3fms  cv=%.4f\n", mat_stats.mean_ms, mat_stats.cv)
 	fmt.printf("  speedup (grad_matrix / scalar): %.2fx\n\n", scalar_stats.mean_ms / mat_stats.mean_ms)
+}
+
+time_diff_vm :: proc(instrs: []DiffInstr, binding: []f32, runs: int) -> stats {
+	sw: time.Stopwatch
+
+	m, squares: f64
+	n: int
+
+	inner_runs := 1000
+
+	grads := make([]f32, len(binding))
+	defer delete(grads)
+
+	for _ in 0 ..< runs {
+		n += 1
+		time.stopwatch_reset(&sw)
+		time.stopwatch_start(&sw)
+		for _ in 0 ..< inner_runs {
+			mem := make([]f32, len(binding))
+			copy(mem, binding)
+			for i in 0 ..< len(grads) { grads[i] = 0 }
+			_, tape := diff_sim_forward(instrs, mem)
+			diff_sim_backward(tape, grads)
+			delete(mem)
+			delete(tape)
+		}
+		time.stopwatch_stop(&sw)
+		x := time.duration_milliseconds(time.stopwatch_duration(sw))
+
+		if n == 1 {
+			m = x
+		} else {
+			m_new := next_mean(m, n, x)
+			squares = next_squares(squares, m, m_new, x)
+			m = m_new
+		}
+	}
+
+	variance := squares / f64(n)
+	return stats{m, variance, math.sqrt(variance) / m}
+}
+
+time_sim_reverse :: proc(compiled: CompiledReverse, binding: []f32, runs: int) -> stats {
+	sw: time.Stopwatch
+
+	m, squares: f64
+	n: int
+
+	inner_runs := 1000
+
+	mem := make([]f32, compiled.total_mem_size)
+	defer delete(mem)
+
+	for _ in 0 ..< runs {
+		n += 1
+		time.stopwatch_reset(&sw)
+		time.stopwatch_start(&sw)
+		for _ in 0 ..< inner_runs {
+			copy(mem[:compiled.num_bindings], binding)
+			for i in compiled.num_bindings ..< compiled.total_mem_size { mem[i] = 0 }
+			simulate(compiled.instrs[:], mem)
+		}
+		time.stopwatch_stop(&sw)
+		x := time.duration_milliseconds(time.stopwatch_duration(sw))
+
+		if n == 1 {
+			m = x
+		} else {
+			m_new := next_mean(m, n, x)
+			squares = next_squares(squares, m, m_new, x)
+			m = m_new
+		}
+	}
+
+	variance := squares / f64(n)
+	return stats{m, variance, math.sqrt(variance) / m}
+}
+
+time_diff_vm_vs_compiled_reverse :: proc() {
+	ast, vars := parse("5*z+1-3+4*2/5+9-11*y/7")
+	vals := map[string]f32{"x" = 2, "y" = 6, "z" = 10}
+	binding := binding_to_arr(vals, vars)
+
+	diff_instrs := compile_diff_vm(ast)
+	compiled := compile_reverse(ast, len(binding))
+
+	// correctness: use eval_grad_forward_all as reference (handles all ops including div)
+	ref_val, ref_grads := eval_grad_forward_all(ast, binding)
+	defer delete(ref_grads)
+
+	diff_mem := make([]f32, len(binding))
+	copy(diff_mem, binding)
+	diff_grads := make([]f32, len(binding))
+	defer delete(diff_grads)
+	defer delete(diff_mem)
+	diff_val, tape := diff_sim_forward(diff_instrs[:], diff_mem)
+	diff_sim_backward(tape, diff_grads)
+	delete(tape)
+
+	comp_mem := make([]f32, compiled.total_mem_size)
+	defer delete(comp_mem)
+	copy(comp_mem[:compiled.num_bindings], binding)
+	simulate(compiled.instrs[:], comp_mem)
+
+	tol: f32 = 1e-4
+	assert(abs(diff_val - ref_val) < tol, "diff_vm value mismatch")
+	for i in 0 ..< len(binding) {
+		assert(abs(diff_grads[i] - ref_grads[i]) < tol, "diff_vm grad mismatch")
+	}
+
+	NUM_RUNS := 100
+	interp_stats := time_grad_reverse(ast, binding, NUM_RUNS)
+	diff_vm_stats := time_diff_vm(diff_instrs[:], binding, NUM_RUNS)
+	compiled_stats := time_sim_reverse(compiled, binding, NUM_RUNS)
+
+	fmt.printf("\n=== diff_vm vs compiled_reverse vs interp_reverse (%s) ===\n", "5*z+1-3+4*2/5+9-11*y/7")
+	fmt.printf("  interp_reverse:    mean=%.3fms  cv=%.4f\n", interp_stats.mean, interp_stats.cv)
+	fmt.printf("  diff_vm:           mean=%.3fms  cv=%.4f\n", diff_vm_stats.mean, diff_vm_stats.cv)
+	fmt.printf("  compiled_reverse:  mean=%.3fms  cv=%.4f\n", compiled_stats.mean, compiled_stats.cv)
 }
