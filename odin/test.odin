@@ -2,6 +2,7 @@
 package main
 import "core:fmt"
 import "core:math"
+import "core:math/rand"
 import "core:time"
 
 // running mean and variance(don't want to collect all values)
@@ -1000,4 +1001,87 @@ test_grad_matrix :: proc() {
 	test_grad_matrix_linear_model()
 
 	fmt.println("=== All MatNode Tests Passed! ===\n")
+}
+
+// Timing comparison: grad_matrix (MatNode reverse) vs matrix_of_single (scalar Node reverse)
+// Both evaluate Ax+b MSE loss on the same linear model.
+time_grad_matrix_vs_scalar :: proc(dim_in, dim_out, num_points, runs: int) {
+	xs := make([dynamic][]f32, num_points)
+	ys := make([dynamic][]f32, num_points)
+	defer {
+		for i in 0 ..< num_points { delete(xs[i]); delete(ys[i]) }
+		delete(xs); delete(ys)
+	}
+
+	true_A := make([]f32, dim_out * dim_in)
+	true_b := make([]f32, dim_out)
+	defer { delete(true_A); delete(true_b) }
+
+	for i in 0 ..< dim_out * dim_in { true_A[i] = rand.float32_range(-2, 2) }
+	for i in 0 ..< dim_out         { true_b[i] = rand.float32_range(-1, 1) }
+
+	for i in 0 ..< num_points {
+		x := make([]f32, dim_in)
+		y := make([]f32, dim_out)
+		for j in 0 ..< dim_in { x[j] = rand.float32_range(-5, 5) }
+		for i2 in 0 ..< dim_out {
+			sum := true_b[i2]
+			for j in 0 ..< dim_in { sum += true_A[i2 * dim_in + j] * x[j] }
+			y[i2] = sum
+		}
+		xs[i] = x
+		ys[i] = y
+	}
+
+	num_trainable := dim_out * dim_in + dim_out
+	total_size    := num_trainable + dim_in + dim_out
+	x_start       := num_trainable
+	y_start        := x_start + dim_in
+
+	// --- matrix_of_single (scalar) setup ---
+	A_node, next_idx := makeVarMat(dim_out, dim_in, 0)
+	b_node: NodeMatrix
+	x_node_s: NodeMatrix
+	y_node_s: NodeMatrix
+	b_node,    next_idx = makeVarMat(dim_out, 1, next_idx)
+	x_node_s,  next_idx = makeVarMat(dim_in, 1, next_idx)
+	y_node_s,  next_idx = makeVarMat(dim_out, 1, next_idx)
+
+	Ax_s    := multNodeMat(&A_node, &x_node_s)
+	pred_s  := binaryOpNodeMat(.Add, &Ax_s, &b_node)
+	diff_s  := binaryOpNodeMat(.Sub, &pred_s, &y_node_s)
+	sq_s    := binaryOpNodeMat(.Mul, &diff_s, &diff_s)
+	loss_s  := reduceNodeMat(.Add, &sq_s)
+
+	binding_s := make([]f32, total_size)
+	defer delete(binding_s)
+
+	scalar_stats := time_train_epoch(loss_s, binding_s, xs[:], ys[:], x_start, y_start, num_trainable, 0, runs)
+
+	// --- grad_matrix (MatNode) setup ---
+	var_shapes := []MatShape{{dim_out, dim_in}, {dim_out, 1}, {dim_in, 1}, {dim_out, 1}}
+
+	A_mat  := make_mat_var(0)
+	b_mat  := make_mat_var(1)
+	x_mat  := make_mat_var(2)
+	y_mat  := make_mat_var(3)
+
+	Ax_m   := make_mat_op(.MatMul, A_mat, x_mat)
+	pred_m := make_mat_op(.Add, Ax_m, b_mat)
+	diff_m := make_mat_op(.Sub, pred_m, y_mat)
+	sq_m   := make_mat_op(.Mul, diff_m, diff_m)
+	loss_m := make_mat_op(.ReduceSum, sq_m)
+
+	binding_m := make([]f32, total_size)
+	defer delete(binding_m)
+
+	mat_stats := time_train_epoch_mat(loss_m, binding_m, var_shapes, xs[:], ys[:], 2, 3, num_trainable, 0, runs)
+
+	fmt.printf(
+		"\n=== grad_matrix vs matrix_of_single (%dx%d, %d pts, %d runs) ===\n",
+		dim_out, dim_in, num_points, runs,
+	)
+	fmt.printf("  matrix_of_single: mean=%.3fms  cv=%.4f\n", scalar_stats.mean_ms, scalar_stats.cv)
+	fmt.printf("  grad_matrix:      mean=%.3fms  cv=%.4f\n", mat_stats.mean_ms, mat_stats.cv)
+	fmt.printf("  speedup (grad_matrix / scalar): %.2fx\n\n", scalar_stats.mean_ms / mat_stats.mean_ms)
 }

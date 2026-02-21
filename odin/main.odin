@@ -6,5 +6,6 @@ main :: proc() {
 	defer context.allocator = old_allocator
 
 	test_grad_matrix()
-	trainLinearMatrixGrad()
+	time_grad_matrix_vs_scalar(20, 20, 200, 10)
+	time_grad_matrix_vs_scalar(50, 50, 500, 10)
 }

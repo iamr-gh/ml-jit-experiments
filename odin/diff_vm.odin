@@ -53,22 +53,36 @@ diff_sim_forward :: proc(instrs: []DiffInstr, mem: []f32) -> (f32, []TapeEntry) 
 	for inst, i in instrs {
 		switch instr in inst {
 		case DMovI:
-			tape[i] = TapeEntry{instr = inst}
+			tape[i] = TapeEntry {
+				instr = inst,
+			}
 			state[instr.dst] = instr.imm
 		case DMov:
-			tape[i] = TapeEntry{instr = inst}
+			tape[i] = TapeEntry {
+				instr = inst,
+			}
 			state[instr.dst] = state[instr.src]
 		case DLoad:
-			tape[i] = TapeEntry{instr = inst}
+			tape[i] = TapeEntry {
+				instr = inst,
+			}
 			state[instr.dst] = mem[instr.addr]
 		case DStore:
-			tape[i] = TapeEntry{instr = inst, operand_vals = {state[instr.src], 0}}
+			tape[i] = TapeEntry {
+				instr        = inst,
+				operand_vals = {state[instr.src], 0},
+			}
 			mem[instr.addr] = state[instr.src]
 		case DAdd:
-			tape[i] = TapeEntry{instr = inst}
+			tape[i] = TapeEntry {
+				instr = inst,
+			}
 			state[instr.dst] = state[instr.src1] + state[instr.src2]
 		case DMul:
-			tape[i] = TapeEntry{instr = inst, operand_vals = {state[instr.src1], state[instr.src2]}}
+			tape[i] = TapeEntry {
+				instr        = inst,
+				operand_vals = {state[instr.src1], state[instr.src2]},
+			}
 			state[instr.dst] = state[instr.src1] * state[instr.src2]
 		}
 	}
@@ -76,6 +90,7 @@ diff_sim_forward :: proc(instrs: []DiffInstr, mem: []f32) -> (f32, []TapeEntry) 
 	return state[.Ret], tape
 }
 
+// note there is some very particular behavior of out grads with respect to addresses
 diff_sim_backward :: proc(tape: []TapeEntry, out_grads: []f32, seed: f32 = 1.0) {
 	reg_grads: [Reg]f32
 	reg_grads[.Ret] = seed
