@@ -568,12 +568,12 @@ test_node_matrix_all :: proc() {
 	fmt.println("=== All NodeMatrix Tests Passed! ===\n")
 }
 
-assert_mat_approx_equal :: proc(a, b: []f32, tol: f32 = 1e-5) {
+assert_mat_approx_equal :: proc(a, b: []f32, tol: f32 = 1e-5, label: string = "") {
 	assert(len(a) == len(b), "length mismatch")
 	for i in 0 ..< len(a) {
 		diff := a[i] - b[i]
 		if diff < 0 {diff = -diff}
-		assert(diff < tol, "value mismatch")
+		assert(diff < tol, label)
 	}
 }
 
@@ -1088,7 +1088,7 @@ test_grad_matrix :: proc() {
 	fmt.println("=== All MatNode Tests Passed! ===\n")
 }
 
-// Timing comparison: grad_matrix (MatNode reverse) vs matrix_of_single (scalar Node reverse)
+// Timing comparison: grad_matrix vs matrix_of_single, each with interp / vmInstr / diffInstr.
 // Both evaluate Ax+b MSE loss on the same linear model.
 time_grad_matrix_vs_scalar :: proc(dim_in, dim_out, num_points, runs: int) {
 	xs := make([dynamic][]f32, num_points)
@@ -1121,35 +1121,29 @@ time_grad_matrix_vs_scalar :: proc(dim_in, dim_out, num_points, runs: int) {
 	num_trainable := dim_out * dim_in + dim_out
 	total_size    := num_trainable + dim_in + dim_out
 	x_start       := num_trainable
-	y_start        := x_start + dim_in
+	y_start       := x_start + dim_in
+	tol: f32      = 1e-4
 
-	// --- matrix_of_single (scalar) setup ---
+	// ── matrix_of_single setup ───────────────────────────────────────────────
 	A_node, next_idx := makeVarMat(dim_out, dim_in, 0)
-	b_node: NodeMatrix
-	x_node_s: NodeMatrix
-	y_node_s: NodeMatrix
-	b_node,    next_idx = makeVarMat(dim_out, 1, next_idx)
-	x_node_s,  next_idx = makeVarMat(dim_in, 1, next_idx)
-	y_node_s,  next_idx = makeVarMat(dim_out, 1, next_idx)
+	b_node: NodeMatrix; b_node, next_idx = makeVarMat(dim_out, 1, next_idx)
+	x_node_s: NodeMatrix; x_node_s, next_idx = makeVarMat(dim_in, 1, next_idx)
+	y_node_s: NodeMatrix; y_node_s, next_idx = makeVarMat(dim_out, 1, next_idx)
 
-	Ax_s    := multNodeMat(&A_node, &x_node_s)
-	pred_s  := binaryOpNodeMat(.Add, &Ax_s, &b_node)
-	diff_s  := binaryOpNodeMat(.Sub, &pred_s, &y_node_s)
-	sq_s    := binaryOpNodeMat(.Mul, &diff_s, &diff_s)
-	loss_s  := reduceNodeMat(.Add, &sq_s)
+	Ax_s   := multNodeMat(&A_node, &x_node_s)
+	pred_s := binaryOpNodeMat(.Add, &Ax_s, &b_node)
+	diff_s := binaryOpNodeMat(.Sub, &pred_s, &y_node_s)
+	sq_s   := binaryOpNodeMat(.Mul, &diff_s, &diff_s)
+	loss_s := reduceNodeMat(.Add, &sq_s)
 
-	binding_s := make([]f32, total_size)
-	defer delete(binding_s)
+	compiled_s    := compile_reverse(loss_s, total_size)
+	diff_instrs_s, diff_mem_size_s := compile_diff_vm_mem(loss_s, total_size)
 
-	scalar_stats := time_train_epoch(loss_s, binding_s, xs[:], ys[:], x_start, y_start, num_trainable, 0, runs)
-
-	// --- grad_matrix (MatNode) setup ---
+	// ── grad_matrix setup ────────────────────────────────────────────────────
 	var_shapes := []MatShape{{dim_out, dim_in}, {dim_out, 1}, {dim_in, 1}, {dim_out, 1}}
 
-	A_mat  := make_mat_var(0)
-	b_mat  := make_mat_var(1)
-	x_mat  := make_mat_var(2)
-	y_mat  := make_mat_var(3)
+	A_mat := make_mat_var(0); b_mat := make_mat_var(1)
+	x_mat := make_mat_var(2); y_mat := make_mat_var(3)
 
 	Ax_m   := make_mat_op(.MatMul, A_mat, x_mat)
 	pred_m := make_mat_op(.Add, Ax_m, b_mat)
@@ -1157,36 +1151,92 @@ time_grad_matrix_vs_scalar :: proc(dim_in, dim_out, num_points, runs: int) {
 	sq_m   := make_mat_op(.Mul, diff_m, diff_m)
 	loss_m := make_mat_op(.ReduceSum, sq_m)
 
-	binding_m := make([]f32, total_size)
-	defer delete(binding_m)
+	compiled_m    := compile_mat_reverse(loss_m, var_shapes)
+	diff_instrs_m := compile_mat_diff_vm(loss_m, var_shapes)
 
-	// --- verify outputs match on first data point ---
-	for j in 0 ..< dim_in  { binding_s[x_start + j]   = xs[0][j]; binding_m[x_start + j]   = xs[0][j] }
-	for j in 0 ..< dim_out { binding_s[y_start + j]   = ys[0][j]; binding_m[y_start + j]   = ys[0][j] }
+	// ── correctness check on first data point ────────────────────────────────
+	binding_ref := make([]f32, total_size); defer delete(binding_ref)
+	for j in 0 ..< dim_in  { binding_ref[x_start + j] = xs[0][j] }
+	for j in 0 ..< dim_out { binding_ref[y_start + j] = ys[0][j] }
 
-	scalar_grads := make([]f32, total_size); defer delete(scalar_grads)
-	mat_grads    := make([]f32, total_size); defer delete(mat_grads)
+	ref_grads := make([]f32, total_size); defer delete(ref_grads)
+	eval_grad_reverse(loss_s, binding_ref, ref_grads)
 
-	scalar_loss := eval_grad_reverse(loss_s, binding_s, scalar_grads)
-	mat_loss_v  := eval_mat_grad_reverse(loss_m, binding_m, var_shapes, mat_grads)
+	// matrix_of_single vmInstr
+	mem_s_vm := make([]f32, compiled_s.total_mem_size); defer delete(mem_s_vm)
+	copy(mem_s_vm[:total_size], binding_ref)
+	for i in total_size ..< compiled_s.total_mem_size { mem_s_vm[i] = 0 }
+	simulate(compiled_s.instrs[:], mem_s_vm)
+	vm_s_grads := mem_s_vm[compiled_s.grad_offset : compiled_s.grad_offset + total_size]
+	assert_mat_approx_equal(vm_s_grads, ref_grads, tol, "scalar vmInstr grad mismatch")
+
+	// matrix_of_single diffInstr
+	mem_s_diff := make([]f32, diff_mem_size_s); defer delete(mem_s_diff)
+	copy(mem_s_diff[:total_size], binding_ref)
+	diff_grads_s := make([]f32, diff_mem_size_s); defer delete(diff_grads_s)
+	_, tape_s := diff_sim_forward(diff_instrs_s[:], mem_s_diff)
+	diff_sim_backward(tape_s, diff_grads_s)
+	delete(tape_s)
+	assert_mat_approx_equal(diff_grads_s[:total_size], ref_grads, tol, "scalar diffInstr grad mismatch")
+
+	// grad_matrix interp
+	mat_grads_ref := make([]f32, total_size); defer delete(mat_grads_ref)
+	mat_loss_v    := eval_mat_grad_reverse(loss_m, binding_ref, var_shapes, mat_grads_ref)
 	defer delete(mat_loss_v)
+	assert_mat_approx_equal(mat_grads_ref, ref_grads, tol, "grad_matrix interp grad mismatch")
 
-	tol: f32 = 1e-4
-	loss_diff := scalar_loss - mat_loss_v[0]
-	if loss_diff < 0 { loss_diff = -loss_diff }
-	assert(loss_diff < tol, "loss value mismatch between scalar and mat approaches")
-	assert_mat_approx_equal(scalar_grads, mat_grads, tol)
-	fmt.printf("  [verify] outputs match (tol=%.0e)\n", tol)
+	// grad_matrix vmInstr
+	mem_m_vm := make([]f32, compiled_m.total_mem_size); defer delete(mem_m_vm)
+	copy(mem_m_vm[:total_size], binding_ref)
+	for i in total_size ..< compiled_m.total_mem_size { mem_m_vm[i] = 0 }
+	simulate(compiled_m.instrs[:], mem_m_vm)
+	vm_m_grads := mem_m_vm[compiled_m.grad_offset : compiled_m.grad_offset + total_size]
+	assert_mat_approx_equal(vm_m_grads, ref_grads, tol, "grad_matrix vmInstr grad mismatch")
 
-	mat_stats := time_train_epoch_mat(loss_m, binding_m, var_shapes, xs[:], ys[:], 2, 3, num_trainable, 0, runs)
+	// grad_matrix diffInstr
+	mem_m_diff := make([]f32, compiled_m.grad_offset); defer delete(mem_m_diff)
+	copy(mem_m_diff[:total_size], binding_ref)
+	diff_grads_m := make([]f32, compiled_m.grad_offset); defer delete(diff_grads_m)
+	_, tape_m := diff_sim_forward(diff_instrs_m[:], mem_m_diff)
+	diff_sim_backward(tape_m, diff_grads_m)
+	delete(tape_m)
+	assert_mat_approx_equal(diff_grads_m[:total_size], ref_grads, tol, "grad_matrix diffInstr grad mismatch")
+
+	fmt.printf("  [verify] all 4 compiled variants match interp (tol=%.0e)\n", tol)
+
+	// ── timing ───────────────────────────────────────────────────────────────
+	binding_s := make([]f32, total_size); defer delete(binding_s)
+	binding_m := make([]f32, total_size); defer delete(binding_m)
+
+	scalar_interp  := time_train_epoch(loss_s, binding_s, xs[:], ys[:], x_start, y_start, num_trainable, 0, runs)
+
+	mem_s_time := make([]f32, compiled_s.total_mem_size); defer delete(mem_s_time)
+	scalar_vm  := time_train_epoch_compiled(compiled_s, mem_s_time, xs[:], ys[:], x_start, y_start, num_trainable, 0, runs)
+
+	scalar_diff := time_train_epoch_diff_vm(diff_instrs_s[:], diff_mem_size_s, xs[:], ys[:], x_start, y_start, num_trainable, 0, runs)
+
+	mat_interp := time_train_epoch_mat(loss_m, binding_m, var_shapes, xs[:], ys[:], 2, 3, num_trainable, 0, runs)
+
+	mem_m_time := make([]f32, compiled_m.total_mem_size); defer delete(mem_m_time)
+	mat_vm     := time_train_epoch_compiled(compiled_m, mem_m_time, xs[:], ys[:], x_start, y_start, num_trainable, 0, runs)
+
+	mat_diff := time_train_epoch_diff_vm(diff_instrs_m[:], compiled_m.grad_offset, xs[:], ys[:], x_start, y_start, num_trainable, 0, runs)
 
 	fmt.printf(
 		"\n=== grad_matrix vs matrix_of_single (%dx%d, %d pts, %d runs) ===\n",
 		dim_out, dim_in, num_points, runs,
 	)
-	fmt.printf("  matrix_of_single: mean=%.3fms  cv=%.4f\n", scalar_stats.mean_ms, scalar_stats.cv)
-	fmt.printf("  grad_matrix:      mean=%.3fms  cv=%.4f\n", mat_stats.mean_ms, mat_stats.cv)
-	fmt.printf("  speedup (grad_matrix / scalar): %.2fx\n\n", scalar_stats.mean_ms / mat_stats.mean_ms)
+	fmt.printf("                    interp        vmInstr       diffInstr\n")
+	fmt.printf("  matrix_of_single: %.3fms  cv=%.3f  %.3fms  cv=%.3f  %.3fms  cv=%.3f\n",
+		scalar_interp.mean_ms, scalar_interp.cv,
+		scalar_vm.mean_ms,     scalar_vm.cv,
+		scalar_diff.mean_ms,   scalar_diff.cv,
+	)
+	fmt.printf("  grad_matrix:      %.3fms  cv=%.3f  %.3fms  cv=%.3f  %.3fms  cv=%.3f\n\n",
+		mat_interp.mean_ms, mat_interp.cv,
+		mat_vm.mean_ms,     mat_vm.cv,
+		mat_diff.mean_ms,   mat_diff.cv,
+	)
 }
 
 time_diff_vm :: proc(instrs: []DiffInstr, binding: []f32, runs: int) -> stats {

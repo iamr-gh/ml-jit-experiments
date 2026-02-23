@@ -339,6 +339,68 @@ trainLinear :: proc() {
 	fmt.printf("]\n")
 }
 
+time_train_epoch_diff_vm :: proc(
+	instrs: []DiffInstr,
+	mem_size: int,
+	xs: [][]f32,
+	ys: [][]f32,
+	x_start: int,
+	y_start: int,
+	num_trainable: int,
+	lr: f32,
+	runs: int,
+) -> TrainStats {
+	sw: time.Stopwatch
+	m, squares: f64
+	n: int
+
+	mem := make([]f32, mem_size)
+	defer delete(mem)
+	grads := make([]f32, mem_size)
+	defer delete(grads)
+
+	for _ in 0 ..< runs {
+		n += 1
+		time.stopwatch_reset(&sw)
+		time.stopwatch_start(&sw)
+
+		for i in 0 ..< len(xs) {
+			for j in 0 ..< len(xs[i]) {
+				mem[x_start + j] = xs[i][j]
+			}
+			for j in 0 ..< len(ys[i]) {
+				mem[y_start + j] = ys[i][j]
+			}
+
+			for j in 0 ..< mem_size {
+				grads[j] = 0
+			}
+
+			_, tape := diff_sim_forward(instrs, mem)
+			diff_sim_backward(tape, grads)
+			delete(tape)
+
+			for j in 0 ..< num_trainable {
+				mem[j] -= lr * grads[j]
+			}
+		}
+
+		time.stopwatch_stop(&sw)
+		x := time.duration_milliseconds(time.stopwatch_duration(sw))
+
+		if n == 1 {
+			m = x
+		} else {
+			m_new := m + ((x - m) / f64(n))
+			squares = squares + ((x - m) * (x - m_new))
+			m = m_new
+		}
+	}
+
+	variance := squares / f64(n)
+	return TrainStats{m, variance, math.sqrt(variance) / m}
+}
+
 time_train_epoch_mat :: proc(
 	loss_node: ^MatNode,
 	binding: []f32,
