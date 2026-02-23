@@ -2,6 +2,10 @@ package main
 
 import "base:intrinsics"
 
+emit :: proc(out: ^[dynamic]VInstr, instrs: ..VInstr) {
+	append(out, ..instrs)
+}
+
 CompiledReverse :: struct {
 	instrs:          [dynamic]VInstr,
 	num_bindings:    int,
@@ -56,31 +60,27 @@ compile_reverse :: proc(tree: ^Node, num_bindings: int) -> CompiledReverse {
 		case Op:
 			l_idx := node_to_idx[n.l]
 			r_idx := node_to_idx[n.r]
-			append(&instrs, FLoad{addr = nodes[l_idx].activation_addr, dst = .Ret})
-			append(&instrs, FLoad{addr = nodes[r_idx].activation_addr, dst = .R1})
+			emit(&instrs, FLoad{addr = nodes[l_idx].activation_addr, dst = .Ret}, FLoad{addr = nodes[r_idx].activation_addr, dst = .R1})
 			switch n.type {
 			case .Add:
-				append(&instrs, FAdd{src1 = .Ret, src2 = .R1, dst = .Ret})
+				emit(&instrs, FAdd{src1 = .Ret, src2 = .R1, dst = .Ret})
 			case .Sub:
-				append(&instrs, FSub{src1 = .Ret, src2 = .R1, dst = .Ret})
+				emit(&instrs, FSub{src1 = .Ret, src2 = .R1, dst = .Ret})
 			case .Mul:
-				append(&instrs, FMul{src1 = .Ret, src2 = .R1, dst = .Ret})
+				emit(&instrs, FMul{src1 = .Ret, src2 = .R1, dst = .Ret})
 			case .Div:
-				append(&instrs, FDiv{src1 = .Ret, src2 = .R1, dst = .Ret})
+				emit(&instrs, FDiv{src1 = .Ret, src2 = .R1, dst = .Ret})
 			}
-			append(&instrs, FStore{addr = info.activation_addr, src = .Ret})
+			emit(&instrs, FStore{addr = info.activation_addr, src = .Ret})
 		case f32:
-			append(&instrs, FMovI{dst = .Ret, imm = n})
-			append(&instrs, FStore{addr = info.activation_addr, src = .Ret})
+			emit(&instrs, FMovI{dst = .Ret, imm = n}, FStore{addr = info.activation_addr, src = .Ret})
 		case int:
-			append(&instrs, FLoad{addr = n, dst = .Ret})
-			append(&instrs, FStore{addr = info.activation_addr, src = .Ret})
+			emit(&instrs, FLoad{addr = n, dst = .Ret}, FStore{addr = info.activation_addr, src = .Ret})
 		}
 	}
 
 	root_idx := len(nodes) - 1
-	append(&instrs, FMovI{dst = .Ret, imm = 1.0})
-	append(&instrs, FStore{addr = nodes[root_idx].grad_addr, src = .Ret})
+	emit(&instrs, FMovI{dst = .Ret, imm = 1.0}, FStore{addr = nodes[root_idx].grad_addr, src = .Ret})
 
 	#reverse for info in nodes {
 		switch n in info.node {
@@ -88,49 +88,54 @@ compile_reverse :: proc(tree: ^Node, num_bindings: int) -> CompiledReverse {
 			l_idx := node_to_idx[n.l]
 			r_idx := node_to_idx[n.r]
 
-			append(&instrs, FLoad{addr = info.grad_addr, dst = .Ret})
+			emit(&instrs, FLoad{addr = info.grad_addr, dst = .Ret})
 
 			switch n.type {
 			case .Add:
-				append(&instrs, FLoad{addr = nodes[l_idx].grad_addr, dst = .R1})
-				append(&instrs, FAdd{src1 = .R1, src2 = .Ret, dst = .R1})
-				append(&instrs, FStore{addr = nodes[l_idx].grad_addr, src = .R1})
-
-				append(&instrs, FLoad{addr = nodes[r_idx].grad_addr, dst = .R1})
-				append(&instrs, FAdd{src1 = .R1, src2 = .Ret, dst = .R1})
-				append(&instrs, FStore{addr = nodes[r_idx].grad_addr, src = .R1})
+				emit(&instrs,
+					FLoad{addr = nodes[l_idx].grad_addr, dst = .R1},
+					FAdd{src1 = .R1, src2 = .Ret, dst = .R1},
+					FStore{addr = nodes[l_idx].grad_addr, src = .R1},
+					FLoad{addr = nodes[r_idx].grad_addr, dst = .R1},
+					FAdd{src1 = .R1, src2 = .Ret, dst = .R1},
+					FStore{addr = nodes[r_idx].grad_addr, src = .R1},
+				)
 
 			case .Sub:
-				append(&instrs, FLoad{addr = nodes[l_idx].grad_addr, dst = .R1})
-				append(&instrs, FAdd{src1 = .R1, src2 = .Ret, dst = .R1})
-				append(&instrs, FStore{addr = nodes[l_idx].grad_addr, src = .R1})
-
-				append(&instrs, FLoad{addr = nodes[r_idx].grad_addr, dst = .R1})
-				append(&instrs, FSub{src1 = .R1, src2 = .Ret, dst = .R1})
-				append(&instrs, FStore{addr = nodes[r_idx].grad_addr, src = .R1})
+				emit(&instrs,
+					FLoad{addr = nodes[l_idx].grad_addr, dst = .R1},
+					FAdd{src1 = .R1, src2 = .Ret, dst = .R1},
+					FStore{addr = nodes[l_idx].grad_addr, src = .R1},
+					FLoad{addr = nodes[r_idx].grad_addr, dst = .R1},
+					FSub{src1 = .R1, src2 = .Ret, dst = .R1},
+					FStore{addr = nodes[r_idx].grad_addr, src = .R1},
+				)
 
 			case .Mul:
-				append(&instrs, FLoad{addr = nodes[r_idx].activation_addr, dst = .R1})
-				append(&instrs, FMul{src1 = .Ret, src2 = .R1, dst = .R2})
-				append(&instrs, FLoad{addr = nodes[l_idx].grad_addr, dst = .R1})
-				append(&instrs, FAdd{src1 = .R1, src2 = .R2, dst = .R1})
-				append(&instrs, FStore{addr = nodes[l_idx].grad_addr, src = .R1})
-
-				append(&instrs, FLoad{addr = nodes[l_idx].activation_addr, dst = .R1})
-				append(&instrs, FMul{src1 = .Ret, src2 = .R1, dst = .R2})
-				append(&instrs, FLoad{addr = nodes[r_idx].grad_addr, dst = .R1})
-				append(&instrs, FAdd{src1 = .R1, src2 = .R2, dst = .R1})
-				append(&instrs, FStore{addr = nodes[r_idx].grad_addr, src = .R1})
+				emit(&instrs,
+					FLoad{addr = nodes[r_idx].activation_addr, dst = .R1},
+					FMul{src1 = .Ret, src2 = .R1, dst = .R2},
+					FLoad{addr = nodes[l_idx].grad_addr, dst = .R1},
+					FAdd{src1 = .R1, src2 = .R2, dst = .R1},
+					FStore{addr = nodes[l_idx].grad_addr, src = .R1},
+					FLoad{addr = nodes[l_idx].activation_addr, dst = .R1},
+					FMul{src1 = .Ret, src2 = .R1, dst = .R2},
+					FLoad{addr = nodes[r_idx].grad_addr, dst = .R1},
+					FAdd{src1 = .R1, src2 = .R2, dst = .R1},
+					FStore{addr = nodes[r_idx].grad_addr, src = .R1},
+				)
 
 			case .Div:
 			}
 
 		case f32:
 		case int:
-			append(&instrs, FLoad{addr = info.grad_addr, dst = .Ret})
-			append(&instrs, FLoad{addr = grad_offset + n, dst = .R1})
-			append(&instrs, FAdd{src1 = .R1, src2 = .Ret, dst = .R1})
-			append(&instrs, FStore{addr = grad_offset + n, src = .R1})
+			emit(&instrs,
+				FLoad{addr = info.grad_addr, dst = .Ret},
+				FLoad{addr = grad_offset + n, dst = .R1},
+				FAdd{src1 = .R1, src2 = .Ret, dst = .R1},
+				FStore{addr = grad_offset + n, src = .R1},
+			)
 		}
 	}
 
