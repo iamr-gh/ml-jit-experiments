@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:math"
 import "core:math/rand"
+import "core:time"
 
 NNActivation :: enum {
 	Sigmoid,
@@ -361,7 +362,10 @@ timeNNMatrixGrad :: proc() {
 	)
 
 	activations: [2]NNActivation = {.Sigmoid, .ReLU}
+	eval_by_activation: [2]TrainStats
+	sgd_by_activation: [2]TrainStats
 	for activation in activations {
+		activation_idx := int(activation)
 		loss_node, _, var_shapes_arr, num_trainable, x_idx, y_idx := build_two_layer_nn_loss(
 			DIM_IN,
 			DIM_HIDDEN,
@@ -388,6 +392,7 @@ timeNNMatrixGrad :: proc() {
 			0,
 			TIMING_RUNS,
 		)
+		eval_by_activation[activation_idx] = eval_stats
 
 		binding_sgd := make([]f32, total_size)
 		defer delete(binding_sgd)
@@ -405,16 +410,255 @@ timeNNMatrixGrad :: proc() {
 			LR,
 			TIMING_RUNS,
 		)
+		sgd_by_activation[activation_idx] = sgd_stats
 
 		fmt.printf(
-			"  hidden=%-7s eval-only mean=%.3fms cv=%.4f | eval+sgd mean=%.3fms cv=%.4f\n",
+			"  hidden=%-7s eval-only mean=%.3fms var=%.6f cv=%.4f | eval+sgd mean=%.3fms var=%.6f cv=%.4f\n",
 			nn_activation_name(activation),
 			eval_stats.mean_ms,
+			eval_stats.var_ms,
 			eval_stats.cv,
 			sgd_stats.mean_ms,
+			sgd_stats.var_ms,
 			sgd_stats.cv,
 		)
 	}
 
+	sig_eval := eval_by_activation[int(NNActivation.Sigmoid)]
+	relu_eval := eval_by_activation[int(NNActivation.ReLU)]
+	sig_sgd := sgd_by_activation[int(NNActivation.Sigmoid)]
+	relu_sgd := sgd_by_activation[int(NNActivation.ReLU)]
+
+	fmt.printf("  speedup (eval-only relu/sigmoid): %.2fx\n", sig_eval.mean_ms / relu_eval.mean_ms)
+	fmt.printf("  speedup (eval+sgd relu/sigmoid): %.2fx\n", sig_sgd.mean_ms / relu_sgd.mean_ms)
+
 	fmt.println("")
+}
+
+build_two_layer_linear_scalar_loss :: proc(dim_in, dim_hidden, dim_out: int) -> (^Node, int, int, int, int) {
+	w1_node, next_idx := makeVarMat(dim_hidden, dim_in, 0)
+	b1_node: NodeMatrix
+	w2_node: NodeMatrix
+	b2_node: NodeMatrix
+	x_node: NodeMatrix
+	y_node: NodeMatrix
+	b1_node, next_idx = makeVarMat(dim_hidden, 1, next_idx)
+	w2_node, next_idx = makeVarMat(dim_out, dim_hidden, next_idx)
+	b2_node, next_idx = makeVarMat(dim_out, 1, next_idx)
+	x_node, next_idx = makeVarMat(dim_in, 1, next_idx)
+	y_node, next_idx = makeVarMat(dim_out, 1, next_idx)
+
+	num_trainable := dim_hidden * dim_in + dim_hidden + dim_out * dim_hidden + dim_out
+	x_start := num_trainable
+	y_start := x_start + dim_in
+
+	w1x := multNodeMat(&w1_node, &x_node)
+	h := binaryOpNodeMat(.Add, &w1x, &b1_node)
+	w2h := multNodeMat(&w2_node, &h)
+	pred := binaryOpNodeMat(.Add, &w2h, &b2_node)
+	diff := binaryOpNodeMat(.Sub, &pred, &y_node)
+	sq := binaryOpNodeMat(.Mul, &diff, &diff)
+	loss_node := reduceNodeMat(.Add, &sq)
+
+	return loss_node, next_idx, num_trainable, x_start, y_start
+}
+
+time_interp_reverse_nn :: proc(node: ^Node, binding: []f32, runs, inner_runs: int) -> stats {
+	sw: time.Stopwatch
+	m, squares: f64
+	n: int
+	grads := make([]f32, len(binding))
+	defer delete(grads)
+
+	for _ in 0 ..< runs {
+		n += 1
+		time.stopwatch_reset(&sw)
+		time.stopwatch_start(&sw)
+		for _ in 0 ..< inner_runs {
+			eval_grad_reverse(node, binding, grads)
+		}
+		time.stopwatch_stop(&sw)
+		x := time.duration_milliseconds(time.stopwatch_duration(sw))
+		if n == 1 {
+			m = x
+		} else {
+			m_new := next_mean(m, n, x)
+			squares = next_squares(squares, m, m_new, x)
+			m = m_new
+		}
+	}
+
+	variance := squares / f64(n)
+	return stats{m, variance, math.sqrt(variance) / m}
+}
+
+time_diff_vm_nn :: proc(instrs: []DiffInstr, binding: []f32, runs, inner_runs: int) -> stats {
+	sw: time.Stopwatch
+	m, squares: f64
+	n: int
+	grads := make([]f32, len(binding))
+	defer delete(grads)
+
+	for _ in 0 ..< runs {
+		n += 1
+		time.stopwatch_reset(&sw)
+		time.stopwatch_start(&sw)
+		for _ in 0 ..< inner_runs {
+			mem := make([]f32, len(binding))
+			copy(mem, binding)
+			for i in 0 ..< len(grads) {
+				grads[i] = 0
+			}
+			_, tape := diff_sim_forward(instrs, mem)
+			diff_sim_backward(tape, grads)
+			delete(mem)
+			delete(tape)
+		}
+		time.stopwatch_stop(&sw)
+		x := time.duration_milliseconds(time.stopwatch_duration(sw))
+		if n == 1 {
+			m = x
+		} else {
+			m_new := next_mean(m, n, x)
+			squares = next_squares(squares, m, m_new, x)
+			m = m_new
+		}
+	}
+
+	variance := squares / f64(n)
+	return stats{m, variance, math.sqrt(variance) / m}
+}
+
+time_compiled_reverse_nn :: proc(compiled: CompiledReverse, binding: []f32, runs, inner_runs: int) -> stats {
+	sw: time.Stopwatch
+	m, squares: f64
+	n: int
+	mem := make([]f32, compiled.total_mem_size)
+	defer delete(mem)
+
+	for _ in 0 ..< runs {
+		n += 1
+		time.stopwatch_reset(&sw)
+		time.stopwatch_start(&sw)
+		for _ in 0 ..< inner_runs {
+			copy(mem[:compiled.num_bindings], binding)
+			for i in compiled.num_bindings ..< compiled.total_mem_size {
+				mem[i] = 0
+			}
+			simulate(compiled.instrs[:], mem)
+		}
+		time.stopwatch_stop(&sw)
+		x := time.duration_milliseconds(time.stopwatch_duration(sw))
+		if n == 1 {
+			m = x
+		} else {
+			m_new := next_mean(m, n, x)
+			squares = next_squares(squares, m, m_new, x)
+			m = m_new
+		}
+	}
+
+	variance := squares / f64(n)
+	return stats{m, variance, math.sqrt(variance) / m}
+}
+
+timeNNCompilationMethods :: proc() {
+	DIM_IN :: 16
+	DIM_HIDDEN :: 32
+	DIM_OUT :: 8
+	RUNS :: 50
+	INNER_RUNS :: 20
+
+	loss_node, total_bindings, num_trainable, x_start, y_start := build_two_layer_linear_scalar_loss(
+		DIM_IN,
+		DIM_HIDDEN,
+		DIM_OUT,
+	)
+
+	binding := make([]f32, total_bindings)
+	defer delete(binding)
+
+	for i in 0 ..< num_trainable {
+		binding[i] = rand.float32_range(-0.25, 0.25)
+	}
+	for j in 0 ..< DIM_IN {
+		binding[x_start + j] = rand.float32_range(-1, 1)
+	}
+	for j in 0 ..< DIM_OUT {
+		binding[y_start + j] = rand.float32_range(-1, 1)
+	}
+
+	diff_instrs := compile_diff_vm(loss_node)
+	compiled := compile_reverse(loss_node, len(binding))
+
+	ref_val, ref_grads := eval_grad_forward_all(loss_node, binding)
+	defer delete(ref_grads)
+
+	interp_grads := make([]f32, len(binding))
+	defer delete(interp_grads)
+	interp_val := eval_grad_reverse(loss_node, binding, interp_grads)
+
+	diff_mem := make([]f32, len(binding))
+	defer delete(diff_mem)
+	copy(diff_mem, binding)
+	diff_grads := make([]f32, len(binding))
+	defer delete(diff_grads)
+	diff_val, tape := diff_sim_forward(diff_instrs[:], diff_mem)
+	diff_sim_backward(tape, diff_grads)
+	delete(tape)
+
+	compiled_mem := make([]f32, compiled.total_mem_size)
+	defer delete(compiled_mem)
+	copy(compiled_mem[:compiled.num_bindings], binding)
+	simulate(compiled.instrs[:], compiled_mem)
+
+	interp_val_err := abs(interp_val - ref_val)
+	diff_val_err := abs(diff_val - ref_val)
+	interp_grad_max_err: f32 = 0
+	diff_grad_max_err: f32 = 0
+	compiled_grad_max_err: f32 = 0
+	for i in 0 ..< len(binding) {
+		interp_err := abs(interp_grads[i] - ref_grads[i])
+		if interp_err > interp_grad_max_err {
+			interp_grad_max_err = interp_err
+		}
+		diff_err := abs(diff_grads[i] - ref_grads[i])
+		if diff_err > diff_grad_max_err {
+			diff_grad_max_err = diff_err
+		}
+		compiled_err := abs(compiled_mem[compiled.grad_offset + i] - ref_grads[i])
+		if compiled_err > compiled_grad_max_err {
+			compiled_grad_max_err = compiled_err
+		}
+	}
+
+	interp_stats := time_interp_reverse_nn(loss_node, binding, RUNS, INNER_RUNS)
+	diff_vm_stats := time_diff_vm_nn(diff_instrs[:], binding, RUNS, INNER_RUNS)
+	compiled_stats := time_compiled_reverse_nn(compiled, binding, RUNS, INNER_RUNS)
+
+	fmt.printf(
+		"\n=== NN compile benchmark (linear 2-layer %d->%d->%d, runs=%d, inner=%d) ===\n",
+		DIM_IN,
+		DIM_HIDDEN,
+		DIM_OUT,
+		RUNS,
+		INNER_RUNS,
+	)
+	fmt.printf(
+		"  [verify] val_err interp=%.4e diff_vm=%.4e | grad_max_err interp=%.4e diff_vm=%.4e compiled=%.4e\n",
+		interp_val_err,
+		diff_val_err,
+		interp_grad_max_err,
+		diff_grad_max_err,
+		compiled_grad_max_err,
+	)
+	if diff_val_err > 1e-2 || diff_grad_max_err > 1e-2 || compiled_grad_max_err > 1e-2 {
+		fmt.println("  [warn] backend mismatch on this NN graph; speed numbers are still useful for throughput comparison")
+	}
+	fmt.printf("  interp_reverse:    mean=%.3fms  var=%.6f  cv=%.4f\n", interp_stats.mean, interp_stats.var, interp_stats.cv)
+	fmt.printf("  diff_vm:           mean=%.3fms  var=%.6f  cv=%.4f\n", diff_vm_stats.mean, diff_vm_stats.var, diff_vm_stats.cv)
+	fmt.printf("  compiled_reverse:  mean=%.3fms  var=%.6f  cv=%.4f\n", compiled_stats.mean, compiled_stats.var, compiled_stats.cv)
+	fmt.printf("  speedup (interp / diff_vm): %.2fx\n", interp_stats.mean / diff_vm_stats.mean)
+	fmt.printf("  speedup (interp / compiled): %.2fx\n", interp_stats.mean / compiled_stats.mean)
+	fmt.printf("  speedup (compiled / diff_vm): %.2fx\n\n", compiled_stats.mean / diff_vm_stats.mean)
 }

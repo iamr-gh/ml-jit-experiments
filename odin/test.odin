@@ -1352,7 +1352,10 @@ time_diff_vm_vs_compiled_reverse :: proc() {
 	compiled_stats := time_sim_reverse(compiled, binding, NUM_RUNS)
 
 	fmt.printf("\n=== diff_vm vs compiled_reverse vs interp_reverse (%s) ===\n", "5*z+1-3+4*2/5+9-11*y/7")
-	fmt.printf("  interp_reverse:    mean=%.3fms  cv=%.4f\n", interp_stats.mean, interp_stats.cv)
-	fmt.printf("  diff_vm:           mean=%.3fms  cv=%.4f\n", diff_vm_stats.mean, diff_vm_stats.cv)
-	fmt.printf("  compiled_reverse:  mean=%.3fms  cv=%.4f\n", compiled_stats.mean, compiled_stats.cv)
+	fmt.printf("  interp_reverse:    mean=%.3fms  var=%.6f  cv=%.4f\n", interp_stats.mean, interp_stats.var, interp_stats.cv)
+	fmt.printf("  diff_vm:           mean=%.3fms  var=%.6f  cv=%.4f\n", diff_vm_stats.mean, diff_vm_stats.var, diff_vm_stats.cv)
+	fmt.printf("  compiled_reverse:  mean=%.3fms  var=%.6f  cv=%.4f\n", compiled_stats.mean, compiled_stats.var, compiled_stats.cv)
+	fmt.printf("  speedup (interp / diff_vm): %.2fx\n", interp_stats.mean / diff_vm_stats.mean)
+	fmt.printf("  speedup (interp / compiled): %.2fx\n", interp_stats.mean / compiled_stats.mean)
+	fmt.printf("  speedup (compiled / diff_vm): %.2fx\n", compiled_stats.mean / diff_vm_stats.mean)
 }
