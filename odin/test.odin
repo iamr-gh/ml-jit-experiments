@@ -906,6 +906,54 @@ test_grad_matrix_squared :: proc() {
 	fmt.println("  MatNode x*x gradients passed!")
 }
 
+test_grad_matrix_exp_relu :: proc() {
+	fmt.println("Testing MatNode exp/relu gradients...")
+
+	var_shapes := []MatShape{{2, 2}}
+	binding := []f32{-2, -0.5, 1, 3}
+
+	x := make_mat_var(0)
+	exp_node := make_mat_op(.Exp, x)
+	relu_node := make_mat_op(.ReLU, x)
+
+	exp_loss := make_mat_op(.ReduceSum, exp_node)
+	relu_loss := make_mat_op(.ReduceSum, relu_node)
+
+	exp_grads := make([]f32, len(binding))
+	relu_grads := make([]f32, len(binding))
+	defer {
+		delete(exp_grads)
+		delete(relu_grads)
+	}
+
+	exp_val := eval_mat_grad_reverse(exp_loss, binding, var_shapes, exp_grads)
+	relu_val := eval_mat_grad_reverse(relu_loss, binding, var_shapes, relu_grads)
+	defer {
+		delete(exp_val)
+		delete(relu_val)
+	}
+
+	tol: f32 = 1e-4
+	expected_exp := []f32{
+		f32(math.exp(f64(-2))),
+		f32(math.exp(f64(-0.5))),
+		f32(math.exp(f64(1))),
+		f32(math.exp(f64(3))),
+	}
+	assert_mat_approx_equal(exp_grads, expected_exp, tol)
+
+	expected_relu := []f32{0, 0, 1, 1}
+	assert_mat_approx_equal(relu_grads, expected_relu, tol)
+
+	expected_relu_sum: f32 = 4
+	diff := relu_val[0] - expected_relu_sum
+	if diff < 0 {diff = -diff}
+	assert(diff < tol)
+
+	assert(exp_val[0] > 0)
+	fmt.println("  MatNode exp/relu gradients passed!")
+}
+
 test_grad_matrix_linear_model :: proc() {
 	fmt.println("Testing MatNode linear model (Ax+b) vs NodeMatrix...")
 
@@ -1082,6 +1130,7 @@ test_grad_matrix :: proc() {
 	test_grad_matrix_reverse_grad()
 	test_grad_matrix_matmul_grad()
 	test_grad_matrix_squared()
+	test_grad_matrix_exp_relu()
 	test_grad_matrix_linear_model()
 	test_grad_matrix_vs_scalar_gradients()
 

@@ -1,6 +1,7 @@
 package main
 
 import "core:mem"
+import "core:math"
 
 MatShape :: struct {
 	r, c: int,
@@ -11,6 +12,8 @@ MatOpType :: enum {
 	Sub,
 	Mul,
 	Div,
+	Exp,
+	ReLU,
 	MatMul,
 	ReduceSum,
 }
@@ -65,7 +68,7 @@ mat_node_shape :: proc(node: ^MatNode, var_shapes: []MatShape) -> MatShape {
 	case MatOp:
 		l_shape := mat_node_shape(n.l, var_shapes)
 		switch n.type {
-		case .Add, .Sub, .Mul, .Div:
+		case .Add, .Sub, .Mul, .Div, .Exp, .ReLU:
 			return l_shape
 		case .MatMul:
 			r_shape := mat_node_shape(n.r, var_shapes)
@@ -125,8 +128,28 @@ mat_ew :: proc(type: MatOpType, l, r: []f32) -> []f32 {
 			result[i] = l[i] * r[i]
 		case .Div:
 			result[i] = l[i] / r[i]
-		case .MatMul, .ReduceSum:
+		case .Exp, .ReLU, .MatMul, .ReduceSum:
 			panic("not an elementwise op")
+		}
+	}
+	return result
+}
+
+mat_exp :: proc(data: []f32) -> []f32 {
+	result := make([]f32, len(data))
+	for i in 0 ..< len(data) {
+		result[i] = f32(math.exp(f64(data[i])))
+	}
+	return result
+}
+
+mat_relu :: proc(data: []f32) -> []f32 {
+	result := make([]f32, len(data))
+	for i in 0 ..< len(data) {
+		if data[i] > 0 {
+			result[i] = data[i]
+		} else {
+			result[i] = 0
 		}
 	}
 	return result
@@ -180,6 +203,10 @@ eval_mat :: proc(node: ^MatNode, binding: []f32, var_shapes: []MatShape) -> ([]f
 			r_val, _ := eval_mat(n.r, binding, var_shapes)
 			defer delete(r_val)
 			return mat_ew(n.type, l_val, r_val), l_shape
+		case .Exp:
+			return mat_exp(l_val), l_shape
+		case .ReLU:
+			return mat_relu(l_val), l_shape
 		case .MatMul:
 			r_val, r_shape := eval_mat(n.r, binding, var_shapes)
 			defer delete(r_val)
@@ -235,6 +262,21 @@ eval_mat_grad_forward :: proc(
 			numer := mat_ew(.Sub, t1, t2); defer delete(numer)
 			denom := mat_ew(.Mul, rvg.val, rvg.val); defer delete(denom)
 			return MatValGrad{val, mat_ew(.Div, numer, denom), lvg.shape}
+
+		case .Exp:
+			val := mat_exp(lvg.val)
+			grad := mat_ew(.Mul, val, lvg.grad)
+			return MatValGrad{val, grad, lvg.shape}
+
+		case .ReLU:
+			val := mat_relu(lvg.val)
+			grad := make([]f32, len(lvg.grad))
+			for i in 0 ..< len(grad) {
+				if lvg.val[i] > 0 {
+					grad[i] = lvg.grad[i]
+				}
+			}
+			return MatValGrad{val, grad, lvg.shape}
 
 		case .MatMul:
 			rvg := eval_mat_grad_forward(n.r, binding, var_shapes, respect)
@@ -353,6 +395,10 @@ eval_mat_grad_reverse_forward :: proc(
 			val = mat_multiply(l_val, l_shape, r_val, r_shape)
 		case .ReduceSum:
 			val = mat_reduce_sum(l_val)
+		case .Exp:
+			val = mat_exp(l_val)
+		case .ReLU:
+			val = mat_relu(l_val)
 		}
 	}
 
@@ -416,6 +462,18 @@ eval_mat_grad_reverse_backward :: proc(
 
 		case .ReduceSum:
 			accumulate_grad(n.l, mat_fill(node_grad[0], mat_size(l_shape)), grad_cache)
+
+		case .Exp:
+			accumulate_grad(n.l, mat_ew(.Mul, node_grad, activation_cache[node]), grad_cache)
+
+		case .ReLU:
+			relu_grad := make([]f32, len(node_grad))
+			for i in 0 ..< len(relu_grad) {
+				if activation_cache[n.l][i] > 0 {
+					relu_grad[i] = node_grad[i]
+				}
+			}
+			accumulate_grad(n.l, relu_grad, grad_cache)
 		}
 
 		eval_mat_grad_reverse_backward(n.l, var_shapes, out_grads, activation_cache, grad_cache)
