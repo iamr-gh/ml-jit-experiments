@@ -1120,6 +1120,109 @@ test_grad_matrix_vs_scalar_gradients :: proc() {
 	fmt.println("  grad_matrix vs matrix_of_single gradients passed!")
 }
 
+test_nn_compilation_correctness :: proc() {
+	fmt.println("Testing NN compilation correctness (interpreted vs compile_reverse_mat vs compile_diff_vm_mat)...")
+
+	INPUT_DIM  :: 4
+	HIDDEN_DIM :: 6
+	OUTPUT_DIM :: 3
+
+	var_shapes := nn_var_shapes(INPUT_DIM, HIDDEN_DIM, OUTPUT_DIM)
+	defer delete(var_shapes)
+	loss_node, x_idx, y_idx, num_trainable := buildNNGraph(var_shapes)
+
+	total_size := 0
+	for s in var_shapes do total_size += mat_size(s)
+
+	// fixed params and data so all three methods see exactly the same inputs
+	ref_binding := make([]f32, total_size)
+	defer delete(ref_binding)
+
+	// small fixed weights
+	for j in 0 ..< num_trainable {
+		ref_binding[j] = f32(j % 7) * 0.1 - 0.3
+	}
+	x_offset := mat_var_offset(x_idx, var_shapes)
+	y_offset := mat_var_offset(y_idx, var_shapes)
+	for j in 0 ..< INPUT_DIM  do ref_binding[x_offset + j] = f32(j + 1) * 0.5
+	for j in 0 ..< OUTPUT_DIM do ref_binding[y_offset + j] = f32(j) * 0.3
+
+	tol: f32 = 1e-3
+
+	// --- interpreted ---
+	interp_binding := make([]f32, total_size)
+	defer delete(interp_binding)
+	copy(interp_binding, ref_binding)
+
+	interp_grads := make([]f32, total_size)
+	defer delete(interp_grads)
+
+	interp_loss_val := eval_mat_grad_reverse(loss_node, interp_binding, var_shapes, interp_grads)
+	defer delete(interp_loss_val)
+	interp_loss := interp_loss_val[0]
+
+	// --- compile_reverse_mat (VInstr) ---
+	compiled_v := compile_reverse_mat(loss_node, var_shapes, num_trainable)
+	defer delete(compiled_v.instrs)
+
+	compiled_v_mem := make([]f32, compiled_v.total_mem_size)
+	defer delete(compiled_v_mem)
+	copy(compiled_v_mem, ref_binding)
+
+	for j in 0 ..< compiled_v.total_mem_size - compiled_v.grad_offset {
+		compiled_v_mem[compiled_v.grad_offset + j] = 0
+	}
+	simulate(compiled_v.instrs[:], compiled_v_mem)
+
+	compiled_v_grads := compiled_v_mem[compiled_v.grad_offset:compiled_v.grad_offset + total_size]
+
+	// --- compile_diff_vm_mat (DiffInstr tape) ---
+	diff_vm_instrs, diff_vm_total := compile_diff_vm_mat(loss_node, var_shapes)
+	defer delete(diff_vm_instrs)
+
+	diff_vm_mem := make([]f32, diff_vm_total)
+	defer delete(diff_vm_mem)
+	copy(diff_vm_mem, ref_binding)
+
+	diff_vm_grads := make([]f32, diff_vm_total)
+	defer delete(diff_vm_grads)
+
+	_, tape := diff_sim_forward(diff_vm_instrs[:], diff_vm_mem)
+	diff_sim_backward(tape, diff_vm_grads)
+	delete(tape)
+
+	// --- correctness checks ---
+
+	// compiled_v loss: the loss value is at compiled_v_mem[root_act_addr].
+	// We verify indirectly: after zeroing grads and simulating, the grad of the
+	// root (scalar loss) flows back to all params. Check that param grads match.
+
+	// check param gradients: interpreted vs compile_reverse_mat
+	for j in 0 ..< num_trainable {
+		diff := interp_grads[j] - compiled_v_grads[j]
+		if diff < 0 do diff = -diff
+		assert(diff < tol, fmt.tprintf(
+			"compile_reverse_mat: param grad[%d] mismatch: interp=%.6f compiled=%.6f",
+			j, interp_grads[j], compiled_v_grads[j],
+		))
+	}
+
+	// check param gradients: interpreted vs compile_diff_vm_mat
+	for j in 0 ..< num_trainable {
+		diff := interp_grads[j] - diff_vm_grads[j]
+		if diff < 0 do diff = -diff
+		assert(diff < tol, fmt.tprintf(
+			"compile_diff_vm_mat: param grad[%d] mismatch: interp=%.6f diff_vm=%.6f",
+			j, interp_grads[j], diff_vm_grads[j],
+		))
+	}
+
+	// sanity: loss is positive (sum of squared differences)
+	assert(interp_loss > 0, "expected positive MSE loss")
+
+	fmt.printf("  NN compilation correctness passed! (loss=%.4f, %d params checked)\n", interp_loss, num_trainable)
+}
+
 test_grad_matrix :: proc() {
 	fmt.println("\n=== Running MatNode vs NodeMatrix Comparison Tests ===")
 
@@ -1133,6 +1236,7 @@ test_grad_matrix :: proc() {
 	test_grad_matrix_exp_relu()
 	test_grad_matrix_linear_model()
 	test_grad_matrix_vs_scalar_gradients()
+	test_nn_compilation_correctness()
 
 	fmt.println("=== All MatNode Tests Passed! ===\n")
 }

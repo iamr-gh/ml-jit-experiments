@@ -44,6 +44,11 @@ DDiv :: struct {
 	dst:  Reg,
 }
 
+DReLU :: struct {
+	src: Reg,
+	dst: Reg,
+}
+
 DiffInstr :: union {
 	DMovI,
 	DMov,
@@ -53,6 +58,7 @@ DiffInstr :: union {
 	DSub,
 	DMul,
 	DDiv,
+	DReLU,
 }
 
 TapeEntry :: struct {
@@ -67,48 +73,32 @@ diff_sim_forward :: proc(instrs: []DiffInstr, mem: []f32) -> (f32, []TapeEntry) 
 	for inst, i in instrs {
 		switch instr in inst {
 		case DMovI:
-			tape[i] = TapeEntry {
-				instr = inst,
-			}
+			tape[i] = TapeEntry{instr = inst}
 			state[instr.dst] = instr.imm
 		case DMov:
-			tape[i] = TapeEntry {
-				instr = inst,
-			}
+			tape[i] = TapeEntry{instr = inst}
 			state[instr.dst] = state[instr.src]
 		case DLoad:
-			tape[i] = TapeEntry {
-				instr = inst,
-			}
+			tape[i] = TapeEntry{instr = inst}
 			state[instr.dst] = mem[instr.addr]
 		case DStore:
-			tape[i] = TapeEntry {
-				instr        = inst,
-				operand_vals = {state[instr.src], 0},
-			}
+			tape[i] = TapeEntry{instr = inst, operand_vals = {state[instr.src], 0}}
 			mem[instr.addr] = state[instr.src]
 		case DAdd:
-			tape[i] = TapeEntry {
-				instr = inst,
-			}
+			tape[i] = TapeEntry{instr = inst}
 			state[instr.dst] = state[instr.src1] + state[instr.src2]
 		case DSub:
-			tape[i] = TapeEntry {
-				instr = inst,
-			}
+			tape[i] = TapeEntry{instr = inst}
 			state[instr.dst] = state[instr.src1] - state[instr.src2]
 		case DMul:
-			tape[i] = TapeEntry {
-				instr        = inst,
-				operand_vals = {state[instr.src1], state[instr.src2]},
-			}
+			tape[i] = TapeEntry{instr = inst, operand_vals = {state[instr.src1], state[instr.src2]}}
 			state[instr.dst] = state[instr.src1] * state[instr.src2]
 		case DDiv:
-			tape[i] = TapeEntry {
-				instr        = inst,
-				operand_vals = {state[instr.src1], state[instr.src2]},
-			}
+			tape[i] = TapeEntry{instr = inst, operand_vals = {state[instr.src1], state[instr.src2]}}
 			state[instr.dst] = state[instr.src1] / state[instr.src2]
+		case DReLU:
+			tape[i] = TapeEntry{instr = inst, operand_vals = {state[instr.src], 0}}
+			state[instr.dst] = max(0, state[instr.src])
 		}
 	}
 
@@ -149,11 +139,16 @@ diff_sim_backward :: proc(tape: []TapeEntry, out_grads: []f32, seed: f32 = 1.0) 
 			reg_grads[instr.src1] += g * entry.operand_vals[1]
 			reg_grads[instr.src2] += g * entry.operand_vals[0]
 		case DDiv:
-			// d/da (a/b) = 1/b,  d/db (a/b) = -a/b²
 			g := reg_grads[instr.dst]
 			reg_grads[instr.dst] = 0
 			reg_grads[instr.src1] += g / entry.operand_vals[1]
 			reg_grads[instr.src2] -= g * entry.operand_vals[0] / (entry.operand_vals[1] * entry.operand_vals[1])
+		case DReLU:
+			g := reg_grads[instr.dst]
+			reg_grads[instr.dst] = 0
+			if entry.operand_vals[0] > 0 {
+				reg_grads[instr.src] += g
+			}
 		}
 	}
 }

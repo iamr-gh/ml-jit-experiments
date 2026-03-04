@@ -62,6 +62,11 @@ FDiv :: struct {
 	dst:  Reg,
 }
 
+FReLU :: struct {
+	src: Reg,
+	dst: Reg,
+}
+
 // point into some statically allocated array
 // addr can be indices, prefer this over pointers
 FLoad :: struct {
@@ -87,9 +92,7 @@ VInstr :: union {
 	FMovI,
 	FLoad,
 	FStore,
-	// pick an allocation and force all pointers into that allocation
-	// FLoad, need to figure out a memory system for compilation
-	// FStore,
+	FReLU,
 }
 
 
@@ -120,6 +123,8 @@ simulate :: proc(instrs: []VInstr, mem: []f32 = nil) -> f32 {
 			state[i.dst] = mem[i.addr]
 		case FStore:
 			mem[i.addr] = state[i.src]
+		case FReLU:
+			state[i.dst] = max(0, state[i.src])
 		}
 	}
 
