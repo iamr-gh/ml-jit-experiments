@@ -1,7 +1,7 @@
 package main
 
-import "core:mem"
 import "core:math"
+import "core:mem"
 
 MatShape :: struct {
 	r, c: int,
@@ -35,6 +35,7 @@ MatNode :: union {
 	int,
 }
 
+// make consider abstracting how slicing works
 MatValGrad :: struct {
 	val:   []f32,
 	grad:  []f32,
@@ -228,7 +229,11 @@ eval_mat_grad_forward :: proc(
 	case int:
 		shape := var_shapes[n]
 		size := mat_size(shape)
-		return MatValGrad{mat_clone(mat_var_data(n, binding, var_shapes)), mat_fill(n == respect ? 1 : 0, size), shape}
+		return MatValGrad {
+			mat_clone(mat_var_data(n, binding, var_shapes)),
+			mat_fill(n == respect ? 1 : 0, size),
+			shape,
+		}
 	case ^MatConst:
 		return MatValGrad{mat_clone(n.data), make([]f32, mat_size(n.shape)), n.shape}
 	case MatOp:
@@ -241,7 +246,11 @@ eval_mat_grad_forward :: proc(
 			rvg := eval_mat_grad_forward(n.r, binding, var_shapes, respect)
 			defer delete(rvg.val)
 			defer delete(rvg.grad)
-			return MatValGrad{mat_ew(n.type, lvg.val, rvg.val), mat_ew(n.type, lvg.grad, rvg.grad), lvg.shape}
+			return MatValGrad {
+				mat_ew(n.type, lvg.val, rvg.val),
+				mat_ew(n.type, lvg.grad, rvg.grad),
+				lvg.shape,
+			}
 
 		case .Mul:
 			rvg := eval_mat_grad_forward(n.r, binding, var_shapes, respect)
@@ -298,7 +307,11 @@ eval_mat_grad_forward_all :: proc(
 	node: ^MatNode,
 	binding: []f32,
 	var_shapes: []MatShape,
-) -> ([]f32, MatShape, [][]f32) {
+) -> (
+	[]f32,
+	MatShape,
+	[][]f32,
+) {
 	grads := make([][]f32, len(var_shapes))
 	val: []f32
 	shape: MatShape
@@ -434,7 +447,7 @@ eval_mat_grad_reverse_backward :: proc(
 		case .Sub:
 			accumulate_grad(n.l, mat_clone(node_grad), grad_cache)
 			neg := make([]f32, len(node_grad))
-			for i in 0 ..< len(neg) { neg[i] = -node_grad[i] }
+			for i in 0 ..< len(neg) {neg[i] = -node_grad[i]}
 			accumulate_grad(n.r, neg, grad_cache)
 
 		case .Mul:
@@ -445,7 +458,7 @@ eval_mat_grad_reverse_backward :: proc(
 			r_val := activation_cache[n.r]
 			l_grad := mat_ew(.Div, node_grad, r_val)
 			neg := make([]f32, len(node_grad))
-			for i in 0 ..< len(neg) { neg[i] = -node_grad[i] }
+			for i in 0 ..< len(neg) {neg[i] = -node_grad[i]}
 			defer delete(neg)
 			numer := mat_ew(.Mul, neg, activation_cache[n.l]); defer delete(numer)
 			denom := mat_ew(.Mul, r_val, r_val); defer delete(denom)
@@ -457,8 +470,16 @@ eval_mat_grad_reverse_backward :: proc(
 			out_shape := mat_node_shape(node, var_shapes)
 			r_t := mat_transpose(activation_cache[n.r], r_shape); defer delete(r_t)
 			l_t := mat_transpose(activation_cache[n.l], l_shape); defer delete(l_t)
-			accumulate_grad(n.l, mat_multiply(node_grad, out_shape, r_t, MatShape{r_shape.c, r_shape.r}), grad_cache)
-			accumulate_grad(n.r, mat_multiply(l_t, MatShape{l_shape.c, l_shape.r}, node_grad, out_shape), grad_cache)
+			accumulate_grad(
+				n.l,
+				mat_multiply(node_grad, out_shape, r_t, MatShape{r_shape.c, r_shape.r}),
+				grad_cache,
+			)
+			accumulate_grad(
+				n.r,
+				mat_multiply(l_t, MatShape{l_shape.c, l_shape.r}, node_grad, out_shape),
+				grad_cache,
+			)
 
 		case .ReduceSum:
 			accumulate_grad(n.l, mat_fill(node_grad[0], mat_size(l_shape)), grad_cache)
@@ -478,7 +499,13 @@ eval_mat_grad_reverse_backward :: proc(
 
 		eval_mat_grad_reverse_backward(n.l, var_shapes, out_grads, activation_cache, grad_cache)
 		if n.r != nil && n.r != n.l {
-			eval_mat_grad_reverse_backward(n.r, var_shapes, out_grads, activation_cache, grad_cache)
+			eval_mat_grad_reverse_backward(
+				n.r,
+				var_shapes,
+				out_grads,
+				activation_cache,
+				grad_cache,
+			)
 		}
 	}
 }
