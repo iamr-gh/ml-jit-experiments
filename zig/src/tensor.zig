@@ -32,6 +32,21 @@ fn stridesOf(comptime shape: anytype) [shape.len]usize {
     return strides;
 }
 
+fn swapLastTwoDims(comptime shape: anytype) [shape.len]usize {
+    comptime var out: [shape.len]usize = undefined;
+    inline for (shape, 0..) |dim, i| {
+        out[i] = dim;
+    }
+    if (shape.len >= 2) {
+        const last = shape.len - 1;
+        const prev = shape.len - 2;
+        const tmp = out[prev];
+        out[prev] = out[last];
+        out[last] = tmp;
+    }
+    return out;
+}
+
 fn isShapeType(comptime shape: anytype) bool {
     return switch (@typeInfo(@TypeOf(shape))) {
         .type => @hasDecl(shape, "Dims"),
@@ -57,7 +72,7 @@ pub fn Shape(comptime dims: anytype) type {
 
 const makeShape = Shape;
 
-pub fn Tensor(comptime T: type, comptime shape: anytype) type {
+pub fn Tensor(comptime Elem: type, comptime shape: anytype) type {
     const ShapeInfo = shapeTypeOf(shape);
     const dims = ShapeInfo.Dims;
     const rank = ShapeInfo.Rank;
@@ -67,16 +82,16 @@ pub fn Tensor(comptime T: type, comptime shape: anytype) type {
     return struct {
         const Self = @This();
 
-        pub const Element = T;
+        pub const Element = Elem;
         pub const Shape = ShapeInfo;
         pub const Dims = dims;
         pub const Rank = rank;
         pub const Len = len;
 
-        data: [len]T,
+        data: [len]Elem,
 
         pub fn zeros() Self {
-            return .{ .data = [_]T{0} ** len };
+            return .{ .data = [_]Elem{0} ** len };
         }
 
         pub fn fromSlice(comptime values: anytype) Self {
@@ -86,11 +101,11 @@ pub fn Tensor(comptime T: type, comptime shape: anytype) type {
             return .{ .data = values };
         }
 
-        pub fn at(self: *const Self, comptime idx: [rank]usize) T {
+        pub fn at(self: *const Self, comptime idx: [rank]usize) Elem {
             return self.data[flatIndex(idx)];
         }
 
-        pub fn set(self: *Self, comptime idx: [rank]usize, value: T) void {
+        pub fn set(self: *Self, comptime idx: [rank]usize, value: Elem) void {
             self.data[flatIndex(idx)] = value;
         }
 
@@ -114,7 +129,7 @@ pub fn Tensor(comptime T: type, comptime shape: anytype) type {
         }
 
         // elementwise operation
-        pub fn ew(self: Self, comptime op: fn (T) T) Self {
+        pub fn ew(self: Self, comptime op: fn (Elem) Elem) Self {
             var out: Self = undefined;
             inline for (0..len) |i| {
                 out.data[i] = op(self.data[i]);
@@ -122,7 +137,7 @@ pub fn Tensor(comptime T: type, comptime shape: anytype) type {
             return out;
         }
 
-        pub fn mulScalar(self: Self, scalar: T) Self {
+        pub fn mulScalar(self: Self, scalar: Elem) Self {
             var out: Self = undefined;
             inline for (0..len) |i| {
                 out.data[i] = self.data[i] * scalar;
@@ -130,7 +145,60 @@ pub fn Tensor(comptime T: type, comptime shape: anytype) type {
             return out;
         }
 
-        pub fn reshape(self: Self, comptime new_shape: anytype) Tensor(T, new_shape) {
+        pub fn divScalar(self: Self, scalar: Elem) Self {
+            var out: Self = undefined;
+            inline for (0..len) |i| {
+                out.data[i] = self.data[i] / scalar;
+            }
+            return out;
+        }
+
+        pub fn softmax(self: Self) Self {
+            comptime {
+                if (rank == 0) {
+                    @compileError("softmax requires rank >= 1");
+                }
+                switch (@typeInfo(Elem)) {
+                    .float, .comptime_float => {},
+                    else => @compileError("softmax requires floating-point element type"),
+                }
+            }
+
+            const last_dim = dims[rank - 1];
+            const outer = len / last_dim;
+            var out: Self = undefined;
+
+            var slice: usize = 0;
+            while (slice < outer) : (slice += 1) {
+                const base = slice * last_dim;
+                var max_value = self.data[base];
+
+                var i: usize = 1;
+                while (i < last_dim) : (i += 1) {
+                    const value = self.data[base + i];
+                    if (value > max_value) {
+                        max_value = value;
+                    }
+                }
+
+                var sum: Elem = 0;
+                i = 0;
+                while (i < last_dim) : (i += 1) {
+                    const exp_value = @exp(self.data[base + i] - max_value);
+                    out.data[base + i] = exp_value;
+                    sum += exp_value;
+                }
+
+                i = 0;
+                while (i < last_dim) : (i += 1) {
+                    out.data[base + i] /= sum;
+                }
+            }
+
+            return out;
+        }
+
+        pub fn reshape(self: Self, comptime new_shape: anytype) Tensor(Elem, new_shape) {
             const NewShape = shapeTypeOf(new_shape);
             comptime {
                 if (NewShape.Len != len) {
@@ -140,10 +208,49 @@ pub fn Tensor(comptime T: type, comptime shape: anytype) type {
             return .{ .data = self.data };
         }
 
+        pub fn T(self: Self) Tensor(Elem, swapLastTwoDims(dims)) {
+            comptime {
+                if (rank < 2) {
+                    @compileError("T requires rank >= 2");
+                }
+            }
+
+            const Transposed = Tensor(Elem, swapLastTwoDims(dims));
+            const last = rank - 1;
+            const prev = rank - 2;
+            var out: Transposed = undefined;
+
+            var out_flat: usize = 0;
+            while (out_flat < len) : (out_flat += 1) {
+                var rest = out_flat;
+                var out_idx: [rank]usize = undefined;
+
+                inline for (0..rank) |axis| {
+                    out_idx[axis] = rest / Transposed.Shape.Strides[axis];
+                    rest %= Transposed.Shape.Strides[axis];
+                }
+
+                var src_flat: usize = 0;
+                inline for (0..rank) |axis| {
+                    const src_idx = if (axis == prev)
+                        out_idx[last]
+                    else if (axis == last)
+                        out_idx[prev]
+                    else
+                        out_idx[axis];
+                    src_flat += src_idx * strides[axis];
+                }
+
+                out.data[out_flat] = self.data[src_flat];
+            }
+
+            return out;
+        }
+
         pub fn matmul(
             self: Self,
             other: anytype,
-        ) Tensor(T, .{ dims[0], @TypeOf(other).Dims[1] }) {
+        ) Tensor(Elem, .{ dims[0], @TypeOf(other).Dims[1] }) {
             const Other = @TypeOf(other);
 
             if (rank != 2 or Other.Rank != 2) {
@@ -152,7 +259,7 @@ pub fn Tensor(comptime T: type, comptime shape: anytype) type {
             if (dims[1] != Other.Dims[0]) {
                 @compileError("matmul shape mismatch");
             }
-            if (T != Other.Element) {
+            if (Elem != Other.Element) {
                 @compileError("matmul element types must match");
             }
 
@@ -160,11 +267,11 @@ pub fn Tensor(comptime T: type, comptime shape: anytype) type {
             const K = dims[1];
             const N = Other.Dims[1];
 
-            var out = Tensor(T, .{ M, N }).zeros();
+            var out = Tensor(Elem, .{ M, N }).zeros();
 
             inline for (0..M) |i| {
                 inline for (0..N) |j| {
-                    var sum: T = 0;
+                    var sum: Elem = 0;
                     inline for (0..K) |k| {
                         sum += self.data[i * K + k] * other.data[k * N + j];
                     }
@@ -197,8 +304,8 @@ pub fn Tensor(comptime T: type, comptime shape: anytype) type {
     };
 }
 
-pub fn tensor(comptime T: type, comptime shape: anytype, comptime values: anytype) Tensor(T, shape) {
-    return Tensor(T, shape).fromSlice(values);
+pub fn tensor(comptime Elem: type, comptime shape: anytype, comptime values: anytype) Tensor(Elem, shape) {
+    return Tensor(Elem, shape).fromSlice(values);
 }
 
 fn relu(x: f32) f32 {
@@ -227,6 +334,26 @@ test "tensor reshape" {
     const b = a.reshape(.{ 3, 2 });
 
     try std.testing.expect(b.eql(B.fromSlice(.{ 1, 2, 3, 4, 5, 6 })));
+}
+
+test "tensor transpose last two dims" {
+    const A = Tensor(i32, .{ 2, 3 });
+
+    const a = A.fromSlice(.{ 1, 2, 3, 4, 5, 6 });
+    const b = a.T();
+    const B = @TypeOf(b);
+
+    try std.testing.expect(b.eql(B.fromSlice(.{ 1, 4, 2, 5, 3, 6 })));
+}
+
+test "tensor transpose batched last two dims" {
+    const A = Tensor(i32, .{ 2, 2, 3 });
+
+    const a = A.fromSlice(.{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 });
+    const b = a.T();
+    const B = @TypeOf(b);
+
+    try std.testing.expect(b.eql(B.fromSlice(.{ 1, 4, 2, 5, 3, 6, 7, 10, 8, 11, 9, 12 })));
 }
 
 test "tensor matmul" {
@@ -266,6 +393,27 @@ test "tensor elementwise sigmoid" {
 
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), actual.data[0], 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.7310586), actual.data[1], 0.0001);
+}
+
+test "tensor divide by scalar" {
+    const T = Tensor(f32, .{ 2, 2 });
+    const a = T.fromSlice(.{ 2, 4, 6, 8 });
+    const actual = a.divScalar(2);
+
+    try std.testing.expect(actual.eql(T.fromSlice(.{ 1, 2, 3, 4 })));
+}
+
+test "tensor softmax" {
+    const T = Tensor(f32, .{ 2, 3 });
+    const a = T.fromSlice(.{ 1, 2, 3, 1, 1, 1 });
+    const actual = a.softmax();
+
+    try std.testing.expectApproxEqAbs(@as(f32, 0.09003057), actual.data[0], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.24472848), actual.data[1], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.66524094), actual.data[2], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.33333334), actual.data[3], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.33333334), actual.data[4], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.33333334), actual.data[5], 0.0001);
 }
 
 test "tensor format" {

@@ -13,9 +13,23 @@ fn mul_func(x: anytype) t.Tensor(f32, .{ 2, 1 }) {
     return A.matmul(x);
 }
 
-fn dense_layer(x: anytype, w: anytype, b: anytype) @TypeOf(w.matmul(x).add(b).ew(t.sigmoid)) {
+fn dense_layer(x: anytype, w: anytype, b: anytype) @TypeOf(w.matmul(x)) {
+    // y = sigmoid(Wx + b)
     return w.matmul(x).add(b).ew(t.sigmoid);
 }
+
+// fn one_attn_head(x: anytype, w_q: anytype, w_k: anytype, w_v: anytype) void {
+// Q, K, V matrices
+// linear projections into the space, by W_q, W_k, W_v
+// Q = W_q x
+// K = W_k x
+// V = W_v x
+// y = softmax(QK^T / sqrt(d)) V
+
+// const q = w_q.matmul(x);
+// const k = w_k.matmul(x);
+// const v = w_v.matmul(x);
+// }
 
 pub fn singleNode() void {
     std.debug.print("Writing a basic mat mul pieces\n", .{});
