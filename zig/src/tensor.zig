@@ -8,6 +8,14 @@ fn product(comptime shape: anytype) usize {
     return p;
 }
 
+fn elem_sum(comptime shape: anytype) usize {
+    comptime var p: usize = 0;
+    inline for (shape) |dim| {
+        p += dim;
+    }
+    return p;
+}
+
 fn rankOf(comptime shape: anytype) usize {
     return shape.len;
 }
@@ -105,6 +113,15 @@ pub fn Tensor(comptime T: type, comptime shape: anytype) type {
             return out;
         }
 
+        // elementwise operation
+        pub fn ew(self: Self, comptime op: fn (T) T) Self {
+            var out: Self = undefined;
+            inline for (0..len) |i| {
+                out.data[i] = op(self.data[i]);
+            }
+            return out;
+        }
+
         pub fn mulScalar(self: Self, scalar: T) Self {
             var out: Self = undefined;
             inline for (0..len) |i| {
@@ -164,12 +181,7 @@ pub fn Tensor(comptime T: type, comptime shape: anytype) type {
             return true;
         }
 
-        pub fn format(
-            self: Self,
-            comptime _: []const u8,
-            _: std.fmt.FormatOptions,
-            writer: anytype,
-        ) !void {
+        pub fn format(self: Self, writer: *std.Io.Writer) std.Io.Writer.Error!void {
             try writer.print("Tensor(", .{});
             inline for (dims, 0..) |dim, i| {
                 if (i != 0) try writer.print("x", .{});
@@ -187,6 +199,14 @@ pub fn Tensor(comptime T: type, comptime shape: anytype) type {
 
 pub fn tensor(comptime T: type, comptime shape: anytype, comptime values: anytype) Tensor(T, shape) {
     return Tensor(T, shape).fromSlice(values);
+}
+
+fn relu(x: f32) f32 {
+    return if (x > 0) x else 0;
+}
+
+pub fn sigmoid(x: f32) f32 {
+    return 1.0 / (1.0 + @exp(-x));
 }
 
 test "tensor add" {
@@ -230,6 +250,39 @@ test "tensor helper constructor" {
     const b = tensor(f32, .{ 2, 2 }, .{ 10, 20, 30, 40 });
 
     try std.testing.expect(a.add(b).eql(tensor(f32, .{ 2, 2 }, .{ 11, 22, 33, 44 })));
+}
+
+test "tensor elementwise relu" {
+    const T = Tensor(f32, .{ 2, 2 });
+    const a = T.fromSlice(.{ -1, 2, -3, 4 });
+
+    try std.testing.expect(a.ew(relu).eql(T.fromSlice(.{ 0, 2, 0, 4 })));
+}
+
+test "tensor elementwise sigmoid" {
+    const T = Tensor(f32, .{2});
+    const a = T.fromSlice(.{ 0, 1 });
+    const actual = a.ew(sigmoid);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), actual.data[0], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.7310586), actual.data[1], 0.0001);
+}
+
+test "tensor format" {
+    const a = tensor(i32, .{ 2, 2 }, .{ 1, 2, 3, 4 });
+    var buf: [128]u8 = undefined;
+    const actual = try std.fmt.bufPrint(&buf, "{f}", .{a});
+
+    try std.testing.expectEqualStrings("Tensor(2x2)[1, 2, 3, 4]", actual);
+}
+
+test "named shape format" {
+    const Matrix = Shape(.{ 2, 1 });
+    const a = tensor(i32, Matrix, .{ 5, 6 });
+    var buf: [128]u8 = undefined;
+    const actual = try std.fmt.bufPrint(&buf, "{f}", .{a});
+
+    try std.testing.expectEqualStrings("Tensor(2x1)[5, 6]", actual);
 }
 
 test "named shape type" {
