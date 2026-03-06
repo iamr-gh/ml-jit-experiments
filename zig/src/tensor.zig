@@ -12,7 +12,7 @@ fn rankOf(comptime shape: anytype) usize {
     return shape.len;
 }
 
-fn Strides(comptime shape: anytype) [shape.len]usize {
+fn stridesOf(comptime shape: anytype) [shape.len]usize {
     comptime var strides: [shape.len]usize = undefined;
     comptime var acc: usize = 1;
     comptime var i: usize = shape.len;
@@ -24,16 +24,44 @@ fn Strides(comptime shape: anytype) [shape.len]usize {
     return strides;
 }
 
+fn isShapeType(comptime shape: anytype) bool {
+    return switch (@typeInfo(@TypeOf(shape))) {
+        .type => @hasDecl(shape, "Dims"),
+        else => false,
+    };
+}
+
+fn shapeTypeOf(comptime shape: anytype) type {
+    return switch (@typeInfo(@TypeOf(shape))) {
+        .type => shape,
+        else => makeShape(shape),
+    };
+}
+
+pub fn Shape(comptime dims: anytype) type {
+    return struct {
+        pub const Dims = dims;
+        pub const Rank = rankOf(dims);
+        pub const Len = product(dims);
+        pub const Strides = stridesOf(dims);
+    };
+}
+
+const makeShape = Shape;
+
 pub fn Tensor(comptime T: type, comptime shape: anytype) type {
-    const rank = rankOf(shape);
-    const len = product(shape);
-    const strides = Strides(shape);
+    const ShapeInfo = shapeTypeOf(shape);
+    const dims = ShapeInfo.Dims;
+    const rank = ShapeInfo.Rank;
+    const len = ShapeInfo.Len;
+    const strides = ShapeInfo.Strides;
 
     return struct {
         const Self = @This();
 
         pub const Element = T;
-        pub const Shape = shape;
+        pub const Shape = ShapeInfo;
+        pub const Dims = dims;
         pub const Rank = rank;
         pub const Len = len;
 
@@ -61,7 +89,7 @@ pub fn Tensor(comptime T: type, comptime shape: anytype) type {
         fn flatIndex(comptime idx: [rank]usize) usize {
             comptime var flat: usize = 0;
             inline for (idx, 0..) |v, i| {
-                if (v >= shape[i]) {
+                if (v >= dims[i]) {
                     @compileError("tensor index out of bounds");
                 }
                 flat += v * strides[i];
@@ -86,8 +114,9 @@ pub fn Tensor(comptime T: type, comptime shape: anytype) type {
         }
 
         pub fn reshape(self: Self, comptime new_shape: anytype) Tensor(T, new_shape) {
+            const NewShape = shapeTypeOf(new_shape);
             comptime {
-                if (product(new_shape) != len) {
+                if (NewShape.Len != len) {
                     @compileError("reshape requires equal element count");
                 }
             }
@@ -97,22 +126,22 @@ pub fn Tensor(comptime T: type, comptime shape: anytype) type {
         pub fn matmul(
             self: Self,
             other: anytype,
-        ) Tensor(T, .{ shape[0], @TypeOf(other).Shape[1] }) {
+        ) Tensor(T, .{ dims[0], @TypeOf(other).Dims[1] }) {
             const Other = @TypeOf(other);
 
             if (rank != 2 or Other.Rank != 2) {
                 @compileError("matmul currently supports rank-2 tensors only");
             }
-            if (shape[1] != Other.Shape[0]) {
+            if (dims[1] != Other.Dims[0]) {
                 @compileError("matmul shape mismatch");
             }
             if (T != Other.Element) {
                 @compileError("matmul element types must match");
             }
 
-            const M = shape[0];
-            const K = shape[1];
-            const N = Other.Shape[1];
+            const M = dims[0];
+            const K = dims[1];
+            const N = Other.Dims[1];
 
             var out = Tensor(T, .{ M, N }).zeros();
 
@@ -142,7 +171,7 @@ pub fn Tensor(comptime T: type, comptime shape: anytype) type {
             writer: anytype,
         ) !void {
             try writer.print("Tensor(", .{});
-            inline for (shape, 0..) |dim, i| {
+            inline for (dims, 0..) |dim, i| {
                 if (i != 0) try writer.print("x", .{});
                 try writer.print("{}", .{dim});
             }
@@ -154,6 +183,10 @@ pub fn Tensor(comptime T: type, comptime shape: anytype) type {
             try writer.print("]", .{});
         }
     };
+}
+
+pub fn tensor(comptime T: type, comptime shape: anytype, comptime values: anytype) Tensor(T, shape) {
+    return Tensor(T, shape).fromSlice(values);
 }
 
 test "tensor add" {
@@ -190,4 +223,27 @@ test "tensor matmul" {
         58,  64,
         139, 154,
     })));
+}
+
+test "tensor helper constructor" {
+    const a = tensor(f32, .{ 2, 2 }, .{ 1, 2, 3, 4 });
+    const b = tensor(f32, .{ 2, 2 }, .{ 10, 20, 30, 40 });
+
+    try std.testing.expect(a.add(b).eql(tensor(f32, .{ 2, 2 }, .{ 11, 22, 33, 44 })));
+}
+
+test "named shape type" {
+    const Matrix = Shape(.{ 2, 2 });
+    const T = Tensor(f32, Matrix);
+    const a = tensor(f32, Matrix, .{ 1, 2, 3, 4 });
+
+    comptime {
+        if (T.Shape != Matrix) {
+            @compileError("tensor should retain the named shape type");
+        }
+    }
+
+    try std.testing.expect(a.eql(T.fromSlice(.{ 1, 2, 3, 4 })));
+    try std.testing.expectEqual(@as(usize, 2), T.Shape.Rank);
+    try std.testing.expectEqual(@as(usize, 4), T.Shape.Len);
 }

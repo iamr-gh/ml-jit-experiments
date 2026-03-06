@@ -1,5 +1,10 @@
 //! By convention, root.zig is the root source file when making a library.
 const std = @import("std");
+const tensor_mod = @import("tensor.zig");
+
+pub const Shape = tensor_mod.Shape;
+pub const Tensor = tensor_mod.Tensor;
+pub const tensor = tensor_mod.tensor;
 
 pub fn bufferedPrint() !void {
     // Stdout is for the actual output of your application, for example if you
