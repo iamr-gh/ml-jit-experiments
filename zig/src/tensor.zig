@@ -47,6 +47,38 @@ fn swapLastTwoDims(comptime shape: anytype) [shape.len]usize {
     return out;
 }
 
+fn matmulResultShape(comptime lhs_shape: anytype, comptime rhs_shape: anytype) [lhs_shape.len]usize {
+    comptime {
+        if (lhs_shape.len < 2 or rhs_shape.len < 2) {
+            @compileError("matmul requires rank >= 2");
+        }
+        if (lhs_shape[lhs_shape.len - 1] != rhs_shape[rhs_shape.len - 2]) {
+            @compileError("matmul shape mismatch");
+        }
+        if (lhs_shape.len == 2 and rhs_shape.len > 2) {
+            @compileError("matmul does not support broadcasting a higher-rank rhs over a rank-2 lhs");
+        }
+        if (lhs_shape.len > 2 and rhs_shape.len > 2) {
+            if (lhs_shape.len != rhs_shape.len) {
+                @compileError("matmul batched operands must have matching rank");
+            }
+            for (0..lhs_shape.len - 2) |i| {
+                if (lhs_shape[i] != rhs_shape[i]) {
+                    @compileError("matmul batched operands must have matching leading dims");
+                }
+            }
+        }
+    }
+
+    comptime var out: [lhs_shape.len]usize = undefined;
+    inline for (0..lhs_shape.len - 2) |i| {
+        out[i] = lhs_shape[i];
+    }
+    out[lhs_shape.len - 2] = lhs_shape[lhs_shape.len - 2];
+    out[lhs_shape.len - 1] = rhs_shape[rhs_shape.len - 1];
+    return out;
+}
+
 fn isShapeType(comptime shape: anytype) bool {
     return switch (@typeInfo(@TypeOf(shape))) {
         .type => @hasDecl(shape, "Dims"),
@@ -78,6 +110,8 @@ pub fn Tensor(comptime Elem: type, comptime shape: anytype) type {
     const rank = ShapeInfo.Rank;
     const len = ShapeInfo.Len;
     const strides = ShapeInfo.Strides;
+    const last_axis = if (rank == 0) 0 else rank - 1;
+    const row_axis = if (rank < 2) 0 else rank - 2;
 
     return struct {
         const Self = @This();
@@ -87,6 +121,36 @@ pub fn Tensor(comptime Elem: type, comptime shape: anytype) type {
         pub const Dims = dims;
         pub const Rank = rank;
         pub const Len = len;
+
+        fn lastAxis() comptime_int {
+            comptime {
+                if (rank == 0) {
+                    @compileError("tensor has no last axis");
+                }
+            }
+            return last_axis;
+        }
+
+        fn rowAxis() comptime_int {
+            comptime {
+                if (rank < 2) {
+                    @compileError("tensor has no row axis");
+                }
+            }
+            return row_axis;
+        }
+
+        fn hasSameShape(comptime Other: type) bool {
+            if (rank != Other.Rank or len != Other.Len) {
+                return false;
+            }
+            inline for (0..rank) |axis| {
+                if (dims[axis] != Other.Dims[axis]) {
+                    return false;
+                }
+            }
+            return true;
+        }
 
         data: [len]Elem,
 
@@ -99,6 +163,63 @@ pub fn Tensor(comptime Elem: type, comptime shape: anytype) type {
                 @compileError("fromSlice length does not match tensor size");
             }
             return .{ .data = values };
+        }
+
+        pub fn dimSize(comptime axis: usize) usize {
+            comptime {
+                if (axis >= rank) {
+                    @compileError("tensor axis out of bounds");
+                }
+            }
+            return dims[axis];
+        }
+
+        pub fn lastDimSize() usize {
+            return dims[lastAxis()];
+        }
+
+        pub fn lastDimAsElement() Elem {
+            comptime {
+                switch (@typeInfo(Elem)) {
+                    .float, .comptime_float => {},
+                    else => @compileError("lastDimAsElement requires floating-point element type"),
+                }
+            }
+            return @as(Elem, @floatFromInt(lastDimSize()));
+        }
+
+        pub fn lastDimValue(self: Self) Elem {
+            _ = self;
+            return lastDimAsElement();
+        }
+
+        pub fn rowCount() usize {
+            return dims[rowAxis()];
+        }
+
+        pub fn matrixElementCount() usize {
+            return rowCount() * lastDimSize();
+        }
+
+        pub fn matrixCount() usize {
+            return len / matrixElementCount();
+        }
+
+        pub fn outerElementCount() usize {
+            return len / lastDimSize();
+        }
+
+        pub fn strideSize(comptime axis: usize) usize {
+            comptime {
+                if (axis >= rank) {
+                    @compileError("tensor stride axis out of bounds");
+                }
+            }
+            return strides[axis];
+        }
+
+        pub fn matrixBase(batch_index: usize) usize {
+            return batch_index * matrixElementCount();
         }
 
         pub fn at(self: *const Self, comptime idx: [rank]usize) Elem {
@@ -120,7 +241,15 @@ pub fn Tensor(comptime Elem: type, comptime shape: anytype) type {
             return flat;
         }
 
-        pub fn add(self: Self, other: Self) Self {
+        pub fn add(self: Self, other: anytype) Self {
+            const Other = @TypeOf(other);
+
+            comptime {
+                if (Elem != Other.Element or !hasSameShape(Other)) {
+                    @compileError("add requires tensors with matching element types and shapes");
+                }
+            }
+
             var out: Self = undefined;
             inline for (0..len) |i| {
                 out.data[i] = self.data[i] + other.data[i];
@@ -164,8 +293,8 @@ pub fn Tensor(comptime Elem: type, comptime shape: anytype) type {
                 }
             }
 
-            const last_dim = dims[rank - 1];
-            const outer = len / last_dim;
+            const last_dim = lastDimSize();
+            const outer = outerElementCount();
             var out: Self = undefined;
 
             var slice: usize = 0;
@@ -216,8 +345,8 @@ pub fn Tensor(comptime Elem: type, comptime shape: anytype) type {
             }
 
             const Transposed = Tensor(Elem, swapLastTwoDims(dims));
-            const last = rank - 1;
-            const prev = rank - 2;
+            const last = lastAxis();
+            const prev = rowAxis();
             var out: Transposed = undefined;
 
             var out_flat: usize = 0;
@@ -226,8 +355,8 @@ pub fn Tensor(comptime Elem: type, comptime shape: anytype) type {
                 var out_idx: [rank]usize = undefined;
 
                 inline for (0..rank) |axis| {
-                    out_idx[axis] = rest / Transposed.Shape.Strides[axis];
-                    rest %= Transposed.Shape.Strides[axis];
+                    out_idx[axis] = rest / Transposed.strideSize(axis);
+                    rest %= Transposed.strideSize(axis);
                 }
 
                 var src_flat: usize = 0;
@@ -250,38 +379,49 @@ pub fn Tensor(comptime Elem: type, comptime shape: anytype) type {
         pub fn matmul(
             self: Self,
             other: anytype,
-        ) Tensor(Elem, .{ dims[0], @TypeOf(other).Dims[1] }) {
+        ) Tensor(Elem, matmulResultShape(dims, @TypeOf(other).Dims)) {
             const Other = @TypeOf(other);
 
-            if (rank != 2 or Other.Rank != 2) {
-                @compileError("matmul currently supports rank-2 tensors only");
-            }
-            if (dims[1] != Other.Dims[0]) {
-                @compileError("matmul shape mismatch");
-            }
             if (Elem != Other.Element) {
                 @compileError("matmul element types must match");
             }
 
-            const M = dims[0];
-            const K = dims[1];
-            const N = Other.Dims[1];
+            const M = rowCount();
+            const K = lastDimSize();
+            const N = Other.lastDimSize();
+            const lhs_batch_count = matrixCount();
+            const out_batch_stride = M * N;
 
-            var out = Tensor(Elem, .{ M, N }).zeros();
+            var out = Tensor(Elem, matmulResultShape(dims, Other.Dims)).zeros();
 
-            inline for (0..M) |i| {
-                inline for (0..N) |j| {
-                    var sum: Elem = 0;
-                    inline for (0..K) |k| {
-                        sum += self.data[i * K + k] * other.data[k * N + j];
+            var batch: usize = 0;
+            while (batch < lhs_batch_count) : (batch += 1) {
+                const lhs_base = matrixBase(batch);
+                const rhs_base = if (Other.Rank == 2) 0 else Other.matrixBase(batch);
+                const out_base = batch * out_batch_stride;
+
+                var i: usize = 0;
+                while (i < M) : (i += 1) {
+                    var j: usize = 0;
+                    while (j < N) : (j += 1) {
+                        var sum: Elem = 0;
+                        var k: usize = 0;
+                        while (k < K) : (k += 1) {
+                            sum += self.data[lhs_base + i * K + k] * other.data[rhs_base + k * N + j];
+                        }
+                        out.data[out_base + i * N + j] = sum;
                     }
-                    out.data[i * N + j] = sum;
                 }
             }
             return out;
         }
 
-        pub fn eql(self: Self, other: Self) bool {
+        pub fn eql(self: Self, other: anytype) bool {
+            const Other = @TypeOf(other);
+
+            if (Elem != Other.Element or !hasSameShape(Other)) {
+                return false;
+            }
             inline for (0..len) |i| {
                 if (self.data[i] != other.data[i]) return false;
             }
@@ -370,6 +510,77 @@ test "tensor matmul" {
         58,  64,
         139, 154,
     })));
+}
+
+test "tensor matmul batched" {
+    const A = Tensor(f32, .{ 2, 2, 3 });
+    const B = Tensor(f32, .{ 2, 3, 2 });
+    const C = Tensor(f32, .{ 2, 2, 2 });
+
+    const a = A.fromSlice(.{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 });
+    const b = B.fromSlice(.{ 7, 8, 9, 10, 11, 12, 1, 2, 0, 1, 1, 0 });
+
+    const c = a.matmul(b);
+
+    try std.testing.expect(c.eql(C.fromSlice(.{
+        58,  64,
+        139, 154,
+        16,  22,
+        22,  31,
+    })));
+}
+
+test "tensor matmul broadcast rhs matrix over batches" {
+    const X = Tensor(f32, .{ 2, 2, 3 });
+    const W = Tensor(f32, .{ 3, 2 });
+    const Y = Tensor(f32, .{ 2, 2, 2 });
+
+    const x = X.fromSlice(.{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 });
+    const w = W.fromSlice(.{ 1, 2, 0, 1, 1, 0 });
+
+    const y = x.matmul(w);
+
+    try std.testing.expect(y.eql(Y.fromSlice(.{
+        4,  4,
+        10, 13,
+        16, 22,
+        22, 31,
+    })));
+}
+
+test "tensor example sequence projection and row softmax" {
+    const x = tensor(f32, .{ 1, 2, 3 }, .{
+        1, 0, 1,
+        0, 1, 1,
+    });
+    const w = tensor(f32, .{ 3, 2 }, .{
+        1, 0,
+        0, 1,
+        1, 1,
+    });
+
+    const logits = x.matmul(w);
+    const probs = logits.softmax();
+
+    try std.testing.expectEqual(@as(usize, 2), @TypeOf(logits).lastDimSize());
+    try std.testing.expectEqual(@as(usize, 2), @TypeOf(logits).rowCount());
+    try std.testing.expect(logits.eql(tensor(f32, .{ 1, 2, 2 }, .{
+        2, 1,
+        1, 2,
+    })));
+    try std.testing.expectApproxEqAbs(@as(f32, 0.7310586), probs.data[0], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.26894143), probs.data[1], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.26894143), probs.data[2], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.7310586), probs.data[3], 0.0001);
+}
+
+test "tensor example transpose exposes swapped last dims" {
+    const x = tensor(f32, .{ 2, 3 }, .{ 1, 2, 3, 4, 5, 6 });
+    const x_t = x.T();
+
+    try std.testing.expectEqual(@as(usize, 3), @TypeOf(x).lastDimSize());
+    try std.testing.expectEqual(@as(usize, 2), @TypeOf(x_t).lastDimSize());
+    try std.testing.expect(x_t.eql(tensor(f32, .{ 3, 2 }, .{ 1, 4, 2, 5, 3, 6 })));
 }
 
 test "tensor helper constructor" {
