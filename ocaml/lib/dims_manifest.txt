@@ -1,0 +1,13 @@
+One 1 one
+Two 2 two
+Three 3 three
+Four 4 four
+Batch 2 batch
+Samples 4 samples
+Feature 1 feature
+Output 1 output
+Seq 128 seq
+D_model 768 d_model
+Heads 12 heads
+Head_dim 64 head_dim
+Vocab 100000 vocab
