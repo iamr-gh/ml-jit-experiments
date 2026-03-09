@@ -1,0 +1,17 @@
+.DS_Store
+*.swp
+*.swo
+*~
+
+.idea/
+.vscode/
+
+ocaml/_build/
+ocaml/.merlin
+ocaml/*.install
+ocaml/*.opam.template
+
+asm/*.o
+asm/*.obj
+asm/*.out
+asm/*.exe
